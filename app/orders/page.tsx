@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { fetchOrders } from "@/lib/api";
+import { fetchOrders, fetchMarkets } from "@/lib/api";
+import { formatTokenAmount } from "@/lib/corex";
 
 const STATUSES = ["", "OPEN", "PARTIAL", "FILLED", "CANCELED"] as const;
 type Status = (typeof STATUSES)[number];
@@ -23,18 +24,48 @@ interface Order {
   timeInForce: string;
 }
 
-const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
-  OPEN: { bg: "rgba(34,197,94,0.12)", color: "#4ade80" },
-  PARTIAL: { bg: "rgba(245,158,11,0.12)", color: "#fbbf24" },
-  FILLED: { bg: "rgba(99,102,241,0.12)", color: "#a5b4fc" },
-  CANCELED: { bg: "rgba(239,68,68,0.08)", color: "#f87171" },
-};
+interface MarketMeta {
+  baseDecimals: number;
+  quoteDecimals: number;
+  baseSymbol: string;
+  quoteSymbol: string;
+}
+
+function safeFormat(raw: string, decimals: number): string {
+  try {
+    return formatTokenAmount(raw, decimals);
+  } catch {
+    return raw;
+  }
+}
 
 function OrdersView({ address }: { address: string }) {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [marketMap, setMarketMap] = useState<Record<string, MarketMeta>>({});
   const [status, setStatus] = useState<Status>("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Fetch markets once on mount
+  useEffect(() => {
+    fetchMarkets()
+      .then((d) => {
+        const tokens: Record<string, { symbol: string }> = {};
+        for (const t of d.tokens ?? []) tokens[t.address.toLowerCase()] = { symbol: t.symbol };
+
+        const map: Record<string, MarketMeta> = {};
+        for (const m of d.markets ?? []) {
+          map[m.marketId] = {
+            baseDecimals: m.baseDecimals,
+            quoteDecimals: m.quoteDecimals,
+            baseSymbol: tokens[m.baseToken.toLowerCase()]?.symbol ?? "BASE",
+            quoteSymbol: tokens[m.quoteToken.toLowerCase()]?.symbol ?? "QUOTE",
+          };
+        }
+        setMarketMap(map);
+      })
+      .catch(() => {}); // non-critical — fall back to raw values
+  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -46,30 +77,47 @@ function OrdersView({ address }: { address: string }) {
   }, [address, status]);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
-      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+    <div className="mx-auto px-5 py-10 sm:px-7" style={{ maxWidth: "960px" }}>
+      <div style={{ marginBottom: "28px", display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: "16px" }}>
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-white">Orders</h1>
-          <p className="mt-1 text-sm font-mono" style={{ color: "var(--muted)" }}>
+          <h1
+            style={{
+              fontFamily: "var(--font-space-grotesk)",
+              fontSize: "22px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--fg)",
+              margin: 0,
+            }}
+          >
+            Orders
+          </h1>
+          <p style={{ marginTop: "4px", fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
             {address}
           </p>
         </div>
 
-        {/* Status filter tabs */}
-        <div
-          className="flex items-center gap-1 rounded-xl p-1"
-          style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--card-border)" }}
-        >
+        {/* Status filter */}
+        <div style={{ display: "flex", gap: "2px" }}>
           {STATUSES.map((s) => (
             <button
               key={s}
               onClick={() => setStatus(s)}
-              className="rounded-lg px-3 py-1 text-xs font-medium transition-all duration-150"
-              style={
-                status === s
-                  ? { background: "rgba(255,255,255,0.1)", color: "#fff" }
-                  : { color: "var(--muted)" }
-              }
+              style={{
+                padding: "5px 12px",
+                borderRadius: "2px",
+                fontSize: "11px",
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                cursor: "pointer",
+                transition: "all 0.1s ease",
+                fontFamily: "var(--font-space-grotesk)",
+                textTransform: "uppercase",
+                ...(status === s
+                  ? { background: "var(--bg-surface)", border: "1px solid var(--border-strong)", color: "var(--fg)" }
+                  : { background: "transparent", border: "1px solid var(--border)", color: "var(--fg-subtle)" }
+                ),
+              }}
             >
               {s || "All"}
             </button>
@@ -83,71 +131,107 @@ function OrdersView({ address }: { address: string }) {
       {!loading && !error && (
         <Card>
           <CardHeader>
-            <CardTitle>
-              {status || "All"} orders
-            </CardTitle>
-            <span className="text-xs tabular-nums" style={{ color: "var(--muted)" }}>
+            <CardTitle>{status || "All"} orders</CardTitle>
+            <span style={{ fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
               {orders.length} result{orders.length !== 1 ? "s" : ""}
             </span>
           </CardHeader>
 
           {orders.length === 0 ? (
-            <p className="py-8 text-center text-sm" style={{ color: "var(--muted)" }}>
-              No orders found.
-            </p>
+            <div style={{ padding: "40px 0", textAlign: "center" }}>
+              <p style={{ fontSize: "12px", color: "var(--fg-subtle)" }}>No orders found</p>
+            </div>
           ) : (
-            <div className="flex flex-col gap-2">
-              {orders.map((o) => {
-                const style = STATUS_STYLES[o.status] ?? { bg: "rgba(255,255,255,0.06)", color: "#fff" };
+            <div>
+              {/* Table header */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "52px 1fr 140px 80px 80px 1fr",
+                  gap: "0 12px",
+                  padding: "0 0 8px",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                {["Side", "Price", "Qty (rem / total)", "Status", "TIF", "Order ID"].map((h) => (
+                  <span
+                    key={h}
+                    style={{
+                      fontSize: "10px",
+                      fontWeight: 600,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      color: "var(--fg-subtle)",
+                      fontFamily: "var(--font-space-grotesk)",
+                    }}
+                  >
+                    {h}
+                  </span>
+                ))}
+              </div>
+
+              {orders.map((o, i) => {
+                const meta = marketMap[o.marketId];
                 return (
                   <div
                     key={o.orderId}
-                    className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-xl px-4 py-3 sm:grid-cols-4"
                     style={{
-                      background: "rgba(255,255,255,0.02)",
-                      border: "1px solid rgba(255,255,255,0.05)",
+                      display: "grid",
+                      gridTemplateColumns: "52px 1fr 140px 80px 80px 1fr",
+                      gap: "0 12px",
+                      padding: "10px 0",
+                      borderBottom: i < orders.length - 1 ? "1px solid var(--border)" : "none",
+                      alignItems: "center",
                     }}
                   >
-                    {/* Side + price */}
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="text-xs font-semibold px-2 py-0.5 rounded-md"
-                        style={{
-                          background: o.side === "BUY" ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.1)",
-                          color: o.side === "BUY" ? "#4ade80" : "#f87171",
-                        }}
-                      >
-                        {o.side}
-                      </span>
-                      <span className="text-sm font-semibold text-white tabular-nums">
-                        {o.price}
-                      </span>
-                    </div>
+                    {/* Side */}
+                    <span
+                      style={{
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        letterSpacing: "0.06em",
+                        color: o.side === "BUY" ? "var(--buy)" : "var(--sell)",
+                      }}
+                    >
+                      {o.side}
+                    </span>
+
+                    {/* Price */}
+                    <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--fg)", fontVariantNumeric: "tabular-nums" }}>
+                      {meta ? safeFormat(o.price, meta.quoteDecimals) : o.price}
+                      {meta && (
+                        <span style={{ marginLeft: "4px", fontSize: "10px", color: "var(--fg-subtle)" }}>
+                          {meta.quoteSymbol}
+                        </span>
+                      )}
+                    </span>
 
                     {/* Qty */}
-                    <div className="text-sm tabular-nums" style={{ color: "var(--muted)" }}>
-                      <span className="text-white">{o.remainingQty}</span>
-                      <span className="mx-1">/</span>
-                      {o.initialQty}
-                    </div>
+                    <span style={{ fontSize: "12px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
+                      <span style={{ color: "var(--fg)" }}>
+                        {meta ? safeFormat(o.remainingQty, meta.baseDecimals) : o.remainingQty}
+                      </span>
+                      <span style={{ margin: "0 3px", color: "var(--fg-subtle)" }}>/</span>
+                      {meta ? safeFormat(o.initialQty, meta.baseDecimals) : o.initialQty}
+                      {meta && (
+                        <span style={{ marginLeft: "4px", fontSize: "10px", color: "var(--fg-subtle)" }}>
+                          {meta.baseSymbol}
+                        </span>
+                      )}
+                    </span>
 
                     {/* Status */}
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-                        style={{ background: style.bg, color: style.color }}
-                      >
-                        {o.status}
-                      </span>
-                      <span className="text-xs" style={{ color: "var(--muted)" }}>
-                        {o.timeInForce}
-                      </span>
-                    </div>
+                    <StatusPill status={o.status} />
 
-                    {/* Order ID */}
-                    <div className="text-xs font-mono truncate" style={{ color: "var(--muted)" }}>
+                    {/* TIF */}
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)", letterSpacing: "0.04em" }}>
+                      {o.timeInForce}
+                    </span>
+
+                    {/* ID */}
+                    <span style={{ fontSize: "10px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {o.orderId.slice(0, 14)}…
-                    </div>
+                    </span>
                   </div>
                 );
               })}
@@ -159,18 +243,51 @@ function OrdersView({ address }: { address: string }) {
   );
 }
 
+function StatusPill({ status }: { status: string }) {
+  const styles: Record<string, { bg: string; color: string }> = {
+    OPEN:     { bg: "var(--buy-dim)",    color: "var(--buy)"    },
+    PARTIAL:  { bg: "var(--accent-dim)", color: "var(--accent)" },
+    FILLED:   { bg: "oklch(55% 0.10 260 / 0.12)", color: "oklch(72% 0.08 260)" },
+    CANCELED: { bg: "var(--sell-dim)",   color: "var(--sell)"   },
+  };
+  const s = styles[status] ?? { bg: "var(--bg-surface)", color: "var(--fg-muted)" };
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 7px",
+        borderRadius: "2px",
+        fontSize: "10px",
+        fontWeight: 600,
+        letterSpacing: "0.06em",
+        background: s.bg,
+        color: s.color,
+        textTransform: "uppercase",
+      }}
+    >
+      {status}
+    </span>
+  );
+}
+
 export default function OrdersPage() {
   return <AddressGuard>{(address) => <OrdersView address={address} />}</AddressGuard>;
 }
 
 function TableSkeleton() {
   return (
-    <div className="flex flex-col gap-2 animate-pulse">
+    <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
       {[1, 2, 3, 4].map((i) => (
         <div
           key={i}
-          className="h-14 rounded-xl"
-          style={{ background: "var(--card)", border: "1px solid var(--card-border)" }}
+          style={{
+            height: "44px",
+            borderRadius: "3px",
+            background: "var(--bg-raised)",
+            border: "1px solid var(--border)",
+            animation: "pulse 2s cubic-bezier(0.4,0,0.6,1) infinite",
+          }}
         />
       ))}
     </div>
@@ -180,11 +297,13 @@ function TableSkeleton() {
 function ErrorBanner({ message }: { message: string }) {
   return (
     <div
-      className="rounded-xl px-4 py-3 text-sm"
       style={{
-        background: "rgba(239,68,68,0.08)",
-        border: "1px solid rgba(239,68,68,0.2)",
-        color: "#f87171",
+        padding: "10px 14px",
+        borderRadius: "3px",
+        fontSize: "12px",
+        background: "var(--error-dim)",
+        border: "1px solid var(--error-border)",
+        color: "var(--error)",
       }}
     >
       {message}

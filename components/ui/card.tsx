@@ -8,10 +8,12 @@ interface CardProps {
 export function Card({ children, className = "" }: CardProps) {
   return (
     <div
-      className={`rounded-2xl p-5 ${className}`}
+      className={className}
       style={{
-        background: "var(--card)",
-        border: "1px solid var(--card-border)",
+        background: "var(--bg-raised)",
+        border: "1px solid var(--border)",
+        borderRadius: "4px",
+        padding: "20px 24px",
       }}
     >
       {children}
@@ -21,15 +23,32 @@ export function Card({ children, className = "" }: CardProps) {
 
 export function CardHeader({ children }: { children: ReactNode }) {
   return (
-    <div className="mb-4 flex items-center justify-between">{children}</div>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: "16px",
+        paddingBottom: "12px",
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
 export function CardTitle({ children }: { children: ReactNode }) {
   return (
     <h2
-      className="text-sm font-medium uppercase tracking-widest"
-      style={{ color: "var(--muted)", letterSpacing: "0.1em" }}
+      style={{
+        fontFamily: "var(--font-space-grotesk)",
+        fontSize: "11px",
+        fontWeight: 600,
+        letterSpacing: "0.1em",
+        textTransform: "uppercase",
+        color: "var(--fg-muted)",
+      }}
     >
       {children}
     </h2>

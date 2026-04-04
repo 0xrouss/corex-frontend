@@ -48,6 +48,31 @@ export interface RequestWithdrawResult {
   teeAuth: Hex;
 }
 
+export interface SubmitWithdrawIntentResult {
+  user: Address;
+  token: Address;
+  amount: string;
+  recipient: Address;
+  withdrawNonce: string;
+  deadline: string;
+  intentDigest: Hex;
+  authorizedSigner: Address;
+  authorizationDigest: Hex;
+  teeAuth: Hex;
+  finalizeTxHash: Hex;
+}
+
+const withdrawIntentTypes = {
+  WithdrawIntent: [
+    { name: "user", type: "address" },
+    { name: "token", type: "address" },
+    { name: "amount", type: "uint256" },
+    { name: "recipient", type: "address" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
+
 export const corexCustodyAbi = [
   {
     type: "function",
@@ -224,6 +249,30 @@ export function formatTokenAmount(value: string, decimals: number): string {
 
 export function decodeHexJson<T>(value: Hex): T {
   return JSON.parse(hexToString(value)) as T;
+}
+
+export function buildWithdrawIntentTypedData(
+  config: Pick<CorexFrontendConfig, "chainId" | "custodyAddress">,
+  intent: {
+    user: Address;
+    token: Address;
+    amount: bigint;
+    recipient: Address;
+    nonce: bigint;
+    deadline: bigint;
+  },
+) {
+  return {
+    domain: {
+      name: "Corex",
+      version: "1",
+      chainId: config.chainId,
+      verifyingContract: config.custodyAddress,
+    },
+    types: withdrawIntentTypes,
+    primaryType: "WithdrawIntent" as const,
+    message: intent,
+  };
 }
 
 export function normalizeProxyActionResult(payload: unknown): CorexProxyActionResult {

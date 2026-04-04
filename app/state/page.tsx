@@ -17,40 +17,63 @@ export default function StatePage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6">
-      <div className="mb-8">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-white">State</h1>
-          <span
-            className="text-xs font-medium px-2 py-0.5 rounded"
+    <div className="mx-auto px-5 py-10 sm:px-7" style={{ maxWidth: "960px" }}>
+      <div style={{ marginBottom: "32px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <h1
             style={{
-              background: "rgba(239,68,68,0.1)",
-              color: "#f87171",
-              border: "1px solid rgba(239,68,68,0.2)",
+              fontFamily: "var(--font-space-grotesk)",
+              fontSize: "22px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--fg)",
+              margin: 0,
             }}
           >
-            debug
+            State
+          </h1>
+          <span
+            style={{
+              fontSize: "10px",
+              fontWeight: 600,
+              letterSpacing: "0.1em",
+              padding: "2px 7px",
+              borderRadius: "2px",
+              background: "var(--sell-dim)",
+              border: "1px solid var(--sell-border)",
+              color: "var(--sell)",
+              textTransform: "uppercase",
+            }}
+          >
+            Debug
           </span>
         </div>
-        <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+        <p style={{ marginTop: "4px", fontSize: "12px", color: "var(--fg-muted)" }}>
           Full serialized TEE runtime state — memory-backed, resets on restart
         </p>
       </div>
 
       {loading && (
         <div
-          className="h-64 rounded-2xl animate-pulse"
-          style={{ background: "var(--card)", border: "1px solid var(--card-border)" }}
+          style={{
+            height: "240px",
+            borderRadius: "4px",
+            background: "var(--bg-raised)",
+            border: "1px solid var(--border)",
+            animation: "pulse 2s cubic-bezier(0.4,0,0.6,1) infinite",
+          }}
         />
       )}
 
       {error && (
         <div
-          className="rounded-xl px-4 py-3 text-sm"
           style={{
-            background: "rgba(239,68,68,0.08)",
-            border: "1px solid rgba(239,68,68,0.2)",
-            color: "#f87171",
+            padding: "10px 14px",
+            borderRadius: "3px",
+            fontSize: "12px",
+            background: "var(--error-dim)",
+            border: "1px solid var(--error-border)",
+            color: "var(--error)",
           }}
         >
           {error}
@@ -63,13 +86,17 @@ export default function StatePage() {
             <CardTitle>Raw State</CardTitle>
           </CardHeader>
           <pre
-            className="overflow-auto rounded-xl p-4 text-xs leading-relaxed"
             style={{
-              background: "rgba(0,0,0,0.3)",
-              color: "rgba(255,255,255,0.6)",
-              border: "1px solid rgba(255,255,255,0.05)",
+              overflow: "auto",
+              borderRadius: "3px",
+              padding: "14px",
+              fontSize: "11px",
+              lineHeight: 1.6,
               maxHeight: "70vh",
-              fontFamily: "var(--font-geist-mono), monospace",
+              background: "oklch(6% 0.007 65)",
+              color: "var(--fg-muted)",
+              border: "1px solid var(--border)",
+              margin: 0,
             }}
           >
             {JSON.stringify(data, null, 2)}

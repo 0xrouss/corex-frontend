@@ -6,6 +6,7 @@ import type { Address, Hex } from "viem";
 import { usePublicClient, useWriteContract } from "wagmi";
 import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { XRPChart } from "@/components/xrp-chart";
 import {
   corexInstructionSenderAbi,
   decodeHexJson,
@@ -109,18 +110,6 @@ const TIF_INFO: Record<TimeInForce, { label: string; description: string }> = {
   FOK: { label: "FOK", description: "Fill-Or-Kill — must fill entirely right now or the whole order is canceled." },
 };
 
-const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
-  OPEN:     { bg: "rgba(34,197,94,0.12)",    color: "#4ade80" },
-  PARTIAL:  { bg: "rgba(245,158,11,0.12)",   color: "#fbbf24" },
-  FILLED:   { bg: "rgba(99,102,241,0.12)",   color: "#a5b4fc" },
-  CANCELED: { bg: "rgba(239,68,68,0.08)",    color: "#f87171" },
-};
-
-const inputStyle = {
-  background: "rgba(255,255,255,0.04)",
-  border: "1px solid rgba(255,255,255,0.08)",
-};
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function generateClientOrderId(): Hex {
@@ -161,9 +150,115 @@ function lockedAmountPreview(
   if (!p || !q || isNaN(p) || isNaN(q)) return "—";
 
   if (side === "BUY") {
-    return `~${(p * q).toFixed(4)} ${quote.symbol} locked`;
+    return `~${(p * q).toFixed(4)} ${quote.symbol}`;
   }
-  return `~${q.toFixed(4)} ${base.symbol} locked`;
+  return `~${q.toFixed(4)} ${base.symbol}`;
+}
+
+// ─── Shared sub-components ───────────────────────────────────────────────────
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      <span
+        style={{
+          fontSize: "10px",
+          fontWeight: 600,
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+          color: "var(--fg-subtle)",
+          fontFamily: "var(--font-space-grotesk)",
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  borderRadius: "3px",
+  padding: "9px 12px",
+  fontSize: "13px",
+  color: "var(--fg)",
+  background: "var(--bg-surface)",
+  border: "1px solid var(--border-strong)",
+  outline: "none",
+  fontFamily: "inherit",
+};
+
+function ActionBanner({ state, compact = false }: { state: ActionState; compact?: boolean }) {
+  if (state.kind === "idle") return null;
+
+  const palette =
+    state.kind === "success"
+      ? { bg: "var(--buy-dim)", border: "var(--buy-border)", color: "var(--buy)" }
+      : state.kind === "error"
+        ? { bg: "var(--error-dim)", border: "var(--error-border)", color: "var(--error)" }
+        : { bg: "var(--accent-dim)", border: "var(--accent-border)", color: "var(--accent)" };
+
+  return (
+    <div
+      style={{
+        borderRadius: "3px",
+        padding: compact ? "6px 10px" : "10px 14px",
+        fontSize: compact ? "11px" : "12px",
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        color: palette.color,
+      }}
+    >
+      {state.stage && !compact && (
+        <p style={{ fontWeight: 600, color: "var(--fg)", marginBottom: "2px", fontSize: "12px" }}>
+          {state.stage}
+        </p>
+      )}
+      {state.message && <p>{state.message}</p>}
+      {state.txHash && !compact && (
+        <p style={{ marginTop: "4px", fontSize: "10px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
+          tx {shortAddress(state.txHash, 10, 8)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div
+      style={{
+        marginBottom: "20px",
+        padding: "10px 14px",
+        borderRadius: "3px",
+        fontSize: "12px",
+        background: "var(--error-dim)",
+        border: "1px solid var(--error-border)",
+        color: "var(--error)",
+      }}
+    >
+      {message}
+    </div>
+  );
+}
+
+function OrdersSkeleton() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
+      {[1, 2, 3].map((i) => (
+        <div
+          key={i}
+          style={{
+            height: "40px",
+            background: "var(--bg-surface)",
+            borderRadius: "2px",
+            animation: "pulse 2s cubic-bezier(0.4,0,0.6,1) infinite",
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 // ─── Main view ───────────────────────────────────────────────────────────────
@@ -182,13 +277,11 @@ function TradeView({ address }: { address: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [balances, setBalances] = useState<Record<string, Balance>>({});
 
-  // Form state
   const [side, setSide] = useState<Side>("BUY");
   const [price, setPrice] = useState("");
   const [qty, setQty] = useState("");
   const [tif, setTif] = useState<TimeInForce>("GTC");
 
-  // Action states
   const [placeState, setPlaceState] = useState<ActionState>({ kind: "idle" });
   const [cancelStates, setCancelStates] = useState<Record<string, ActionState>>({});
 
@@ -198,8 +291,6 @@ function TradeView({ address }: { address: string }) {
   const quote = marketsData?.tokens.find(
     (t) => t.address.toLowerCase() === selectedMarket?.quoteToken.toLowerCase(),
   );
-
-  // ── Load ──────────────────────────────────────────────────────────────────
 
   const loadConfig = useCallback(async () => {
     const [cfg, markets] = await Promise.all([fetchCorexConfig(), fetchMarkets()]);
@@ -213,7 +304,7 @@ function TradeView({ address }: { address: string }) {
       const data = await fetchAccount(address);
       setBalances(data.balances ?? {});
     } catch {
-      // non-critical, balances will show as empty
+      // non-critical
     }
   }, [address]);
 
@@ -241,11 +332,9 @@ function TradeView({ address }: { address: string }) {
     void loadAccount();
   }, [loadOrders, loadAccount]);
 
-  // Fetch TEE registry address once config is loaded
   useEffect(() => {
     if (!config || !publicClient) return;
     let cancelled = false;
-
     publicClient
       .readContract({
         address: config.instructionSender,
@@ -255,16 +344,12 @@ function TradeView({ address }: { address: string }) {
       .then((addr) => {
         if (!cancelled) setTeeExtensionRegistryAddress(addr as Address);
       })
-      .catch(() => { /* non-critical */ });
-
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [config, publicClient]);
 
-  // ── Place order ───────────────────────────────────────────────────────────
-
   async function handlePlaceOrder() {
     if (!config || !publicClient || !selectedMarket || !base || !quote) return;
-
     try {
       const priceRaw = parseAmountInput(price, quote.decimals);
       const qtyRaw = BigInt(Math.floor(parseFloat(qty)));
@@ -272,46 +357,31 @@ function TradeView({ address }: { address: string }) {
       const sideUint8 = side === "BUY" ? 0 : 1;
       const tifUint8 = tif === "GTC" ? 0 : tif === "IOC" ? 1 : 2;
 
-      setPlaceState({
-        kind: "pending",
-        stage: "Placing order",
-        message: `Sending ${side} order to TEE via contract…`,
-      });
+      setPlaceState({ kind: "pending", stage: "Submitting", message: `Sending ${side} order via contract…` });
 
       const hash = await writeContractAsync({
         chainId: config.chainId,
         address: config.instructionSender,
         abi: corexInstructionSenderAbi,
         functionName: "placeOrder",
-        args: [
-          {
-            user: address as Address,
-            clientOrderId,
-            marketId: selectedMarket.marketIdBytes32 as Hex,
-            side: sideUint8,
-            price: priceRaw,
-            qty: qtyRaw,
-            timeInForce: tifUint8,
-          },
-        ],
+        args: [{
+          user: address as Address,
+          clientOrderId,
+          marketId: selectedMarket.marketIdBytes32 as Hex,
+          side: sideUint8,
+          price: priceRaw,
+          qty: qtyRaw,
+          timeInForce: tifUint8,
+        }],
         value: BigInt(config.feeWei),
       });
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       assertSuccessfulReceipt(receipt, "placeOrder");
 
-      const instructionId = getInstructionIdFromReceipt(
-        receipt,
-        teeExtensionRegistryAddress ?? undefined,
-      );
+      const instructionId = getInstructionIdFromReceipt(receipt, teeExtensionRegistryAddress ?? undefined);
 
-      setPlaceState({
-        kind: "pending",
-        stage: "Waiting for TEE",
-        message: "Polling TEE for order confirmation…",
-        txHash: hash,
-        instructionId,
-      });
+      setPlaceState({ kind: "pending", stage: "TEE processing", message: "Awaiting TEE confirmation…", txHash: hash, instructionId });
 
       const proxyPayload = await fetchProxyResult(instructionId);
       const actionResult = normalizeProxyActionResult(proxyPayload);
@@ -321,60 +391,39 @@ function TradeView({ address }: { address: string }) {
       }
 
       const result = decodeHexJson<PlaceOrderResult>(actionResult.data);
-
       setPrice("");
       setQty("");
       setPlaceState({
         kind: "success",
         stage: "Order placed",
-        message: `${side} order ${result.status}${result.fills?.length ? ` — ${result.fills.length} fill(s)` : ""}. Order ID: ${shortAddress(result.orderId)}`,
+        message: `${side} ${result.status}${result.fills?.length ? ` · ${result.fills.length} fill(s)` : ""} · ${shortAddress(result.orderId)}`,
         txHash: hash,
         instructionId,
       });
 
       await Promise.all([loadOrders(), loadAccount()]);
     } catch (error) {
-      setPlaceState({
-        kind: "error",
-        stage: "Order failed",
-        message: getErrorMessage(error),
-      });
+      setPlaceState({ kind: "error", stage: "Failed", message: getErrorMessage(error) });
     }
   }
 
-  // ── Cancel order ──────────────────────────────────────────────────────────
-
   async function handleCancelOrder(orderId: string) {
     if (!config || !publicClient) return;
-
-    setCancelStates((prev) => ({
-      ...prev,
-      [orderId]: { kind: "pending", stage: "Canceling", message: "Sending cancel to TEE…" },
-    }));
-
+    setCancelStates((prev) => ({ ...prev, [orderId]: { kind: "pending", message: "Canceling…" } }));
     try {
       const hash = await writeContractAsync({
         chainId: config.chainId,
         address: config.instructionSender,
         abi: corexInstructionSenderAbi,
         functionName: "cancelOrder",
-        args: [
-          {
-            user: address as Address,
-            orderId: orderId as Hex,
-          },
-        ],
+        args: [{ user: address as Address, orderId: orderId as Hex }],
         value: BigInt(config.feeWei),
       });
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       assertSuccessfulReceipt(receipt, "cancelOrder");
 
-      const instructionId = getInstructionIdFromReceipt(
-        receipt,
-        teeExtensionRegistryAddress ?? undefined,
-      );
-
+      const instructionId = getInstructionIdFromReceipt(receipt, teeExtensionRegistryAddress ?? undefined);
       const proxyPayload = await fetchProxyResult(instructionId);
       const actionResult = normalizeProxyActionResult(proxyPayload);
 
@@ -383,114 +432,117 @@ function TradeView({ address }: { address: string }) {
       }
 
       const result = decodeHexJson<CancelOrderResult>(actionResult.data);
-
+      const canceledOrder = activeOrders.find((o) => o.orderId === orderId);
+      const unlockedToken = canceledOrder?.side === "SELL" ? base : quote;
+      const unlockedFormatted = unlockedToken
+        ? safeFormatAmount(result.unlockedAmount, unlockedToken.decimals)
+        : result.unlockedAmount;
       setCancelStates((prev) => ({
         ...prev,
-        [orderId]: {
-          kind: "success",
-          stage: "Canceled",
-          message: `Order canceled. Unlocked: ${result.unlockedAmount}`,
-          txHash: hash,
-          instructionId,
-        },
+        [orderId]: { kind: "success", message: `Canceled · unlocked ${unlockedFormatted}${unlockedToken ? ` ${unlockedToken.symbol}` : ""}`, txHash: hash },
       }));
 
       await Promise.all([loadOrders(), loadAccount()]);
     } catch (error) {
       setCancelStates((prev) => ({
         ...prev,
-        [orderId]: {
-          kind: "error",
-          stage: "Cancel failed",
-          message: getErrorMessage(error),
-        },
+        [orderId]: { kind: "error", message: getErrorMessage(error) },
       }));
     }
   }
 
-  // Balances for base and quote tokens (case-insensitive key lookup)
   const findBalance = (tokenAddress: string) => {
-    const key = Object.keys(balances).find(
-      (k) => k.toLowerCase() === tokenAddress.toLowerCase(),
-    );
+    const key = Object.keys(balances).find((k) => k.toLowerCase() === tokenAddress.toLowerCase());
     return key ? balances[key] : undefined;
   };
-  const baseBalanceRaw = base ? findBalance(base.address) : undefined;
+
+  const baseBalanceRaw  = base  ? findBalance(base.address)  : undefined;
   const quoteBalanceRaw = quote ? findBalance(quote.address) : undefined;
 
-  const baseAvailable = base && baseBalanceRaw
-    ? parseFloat(formatUnits(BigInt(baseBalanceRaw.available), base.decimals))
-    : null;
-  const baseLocked = base && baseBalanceRaw
-    ? parseFloat(formatUnits(BigInt(baseBalanceRaw.locked), base.decimals))
-    : null;
-  const quoteAvailable = quote && quoteBalanceRaw
-    ? parseFloat(formatUnits(BigInt(quoteBalanceRaw.available), quote.decimals))
-    : null;
-  const quoteLocked = quote && quoteBalanceRaw
-    ? parseFloat(formatUnits(BigInt(quoteBalanceRaw.locked), quote.decimals))
-    : null;
+  const baseAvailable  = base  && baseBalanceRaw  ? parseFloat(formatUnits(BigInt(baseBalanceRaw.available),  base.decimals))  : null;
+  const baseLocked     = base  && baseBalanceRaw  ? parseFloat(formatUnits(BigInt(baseBalanceRaw.locked),     base.decimals))  : null;
+  const quoteAvailable = quote && quoteBalanceRaw ? parseFloat(formatUnits(BigInt(quoteBalanceRaw.available), quote.decimals)) : null;
+  const quoteLocked    = quote && quoteBalanceRaw ? parseFloat(formatUnits(BigInt(quoteBalanceRaw.locked),    quote.decimals)) : null;
 
-  // Insufficient funds check.
-  // qty is a plain integer (whole base units, not scaled by baseDecimals).
-  // price is scaled by quoteDecimals. So BUY locks priceRaw * qtyInt raw quote atoms.
-  // For SELL, compare whole-token quantities in human-readable terms.
   const priceFloat = parseFloat(price);
-  const qtyFloat = parseFloat(qty);
+  const qtyFloat   = parseFloat(qty);
+
   const insufficientFunds = (() => {
     if (!price || !qty || isNaN(priceFloat) || isNaN(qtyFloat)) return false;
     try {
       if (side === "BUY" && quote && quoteBalanceRaw) {
         const priceRaw = parseAmountInput(price, quote.decimals);
-        const qtyInt = BigInt(Math.floor(qtyFloat));
-        return priceRaw * qtyInt > BigInt(quoteBalanceRaw.available);
+        return priceRaw * BigInt(Math.floor(qtyFloat)) > BigInt(quoteBalanceRaw.available);
       }
-      if (side === "SELL" && baseAvailable !== null) {
-        // baseAvailable is in human-readable whole tokens (formatUnits applied)
-        return qtyFloat > baseAvailable;
-      }
-    } catch {
-      // invalid input — let the contract reject it
-    }
+      if (side === "SELL" && baseAvailable !== null) return qtyFloat > baseAvailable;
+    } catch {}
     return false;
   })();
 
   const actionsDisabled = !config || !publicClient || !selectedMarket;
-  const placePending = placeState.kind === "pending";
-  const canPlace = !actionsDisabled && !placePending && !!price && !!qty && !insufficientFunds;
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  const placePending    = placeState.kind === "pending";
+  const canPlace        = !actionsDisabled && !placePending && !!price && !!qty && !insufficientFunds;
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
+    <div className="mx-auto px-5 py-8 sm:px-7" style={{ maxWidth: "1400px" }}>
       {/* Header */}
-      <div className="mb-8 flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-white">Trade</h1>
-          <span
-            className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold"
+      <div style={{ marginBottom: "24px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <h1
             style={{
-              background: "rgba(245,158,11,0.14)",
-              border: "1px solid rgba(245,158,11,0.24)",
-              color: "#fbbf24",
+              fontFamily: "var(--font-space-grotesk)",
+              fontSize: "22px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--fg)",
+              margin: 0,
             }}
           >
-            TEE order book
+            Trade
+          </h1>
+          <span
+            style={{
+              fontSize: "10px",
+              fontWeight: 600,
+              letterSpacing: "0.1em",
+              padding: "2px 7px",
+              borderRadius: "2px",
+              background: "var(--accent-dim)",
+              border: "1px solid var(--accent-border)",
+              color: "var(--accent)",
+              textTransform: "uppercase",
+            }}
+          >
+            Dark Pool
           </span>
         </div>
-        <p className="text-sm font-mono" style={{ color: "var(--muted)" }}>{address}</p>
+        <p style={{ marginTop: "4px", fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
+          {address}
+        </p>
       </div>
 
       {loadError && <ErrorBanner message={loadError} />}
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div
+        style={{
+          display: "grid",
+          gap: "20px",
+          gridTemplateColumns: "minmax(0, 420px) minmax(0, 1fr)",
+        }}
+        className="xl:grid-cols-[420px_1fr]"
+      >
         {/* ── Place Order ─────────────────────────────────────────────── */}
         <Card>
           <CardHeader>
             <CardTitle>Place Order</CardTitle>
+            {selectedMarket && base && quote && (
+              <span style={{ fontSize: "11px", color: "var(--fg-muted)", letterSpacing: "0.01em" }}>
+                {base.symbol} / {quote.symbol}
+              </span>
+            )}
           </CardHeader>
 
-          <div className="flex flex-col gap-5">
+          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             {/* Market picker */}
             <Field label="Market">
               <select
@@ -499,7 +551,6 @@ function TradeView({ address }: { address: string }) {
                   const m = marketsData?.markets.find((mk) => mk.marketId === e.target.value);
                   if (m) setSelectedMarket(m);
                 }}
-                className="w-full rounded-xl px-4 py-3 text-sm text-white outline-none"
                 style={inputStyle}
               >
                 {(marketsData?.markets ?? []).map((m) => (
@@ -510,63 +561,29 @@ function TradeView({ address }: { address: string }) {
               </select>
             </Field>
 
-            {/* Market info pill */}
-            {selectedMarket && base && quote && (
-              <div
-                className="flex flex-wrap gap-3 rounded-xl px-4 py-3 text-xs font-mono"
-                style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.06)" }}
-              >
-                <span style={{ color: "var(--muted)" }}>
-                  base <span className="text-white">{base.symbol}</span> ({base.decimals} dp)
-                </span>
-                <span style={{ color: "var(--muted)" }}>
-                  quote <span className="text-white">{quote.symbol}</span> ({quote.decimals} dp)
-                </span>
-                <span style={{ color: "var(--muted)" }}>
-                  fee <span className="text-white">{config?.feeWei ?? "—"} wei</span>
-                </span>
-              </div>
-            )}
-
-            {/* TEE Balances */}
+            {/* Balances strip */}
             {base && quote && (
-              <div
-                className="grid grid-cols-2 gap-2"
-              >
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
                 {[
-                  {
-                    token: base,
-                    available: baseAvailable,
-                    locked: baseLocked,
-                    highlighted: side === "SELL",
-                  },
-                  {
-                    token: quote,
-                    available: quoteAvailable,
-                    locked: quoteLocked,
-                    highlighted: side === "BUY",
-                  },
-                ].map(({ token, available, locked, highlighted }) => (
+                  { token: base,  available: baseAvailable,  locked: baseLocked,  relevant: side === "SELL" },
+                  { token: quote, available: quoteAvailable, locked: quoteLocked, relevant: side === "BUY"  },
+                ].map(({ token, available, locked, relevant }) => (
                   <div
                     key={token.address}
-                    className="rounded-xl px-3 py-3"
                     style={{
-                      background: highlighted ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.02)",
-                      border: highlighted
-                        ? "1px solid rgba(255,255,255,0.1)"
-                        : "1px solid rgba(255,255,255,0.05)",
+                      padding: "8px 10px",
+                      borderRadius: "3px",
+                      background: relevant ? "var(--bg-surface)" : "transparent",
+                      border: `1px solid ${relevant ? "var(--border-strong)" : "var(--border)"}`,
                     }}
                   >
-                    <p className="text-xs font-semibold" style={{ color: highlighted ? "#fff" : "var(--muted)" }}>
+                    <p style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.06em", color: relevant ? "var(--accent)" : "var(--fg-subtle)", textTransform: "uppercase" }}>
                       {token.symbol}
                     </p>
-                    <p
-                      className="mt-1 text-sm font-mono tabular-nums"
-                      style={{ color: available !== null ? "#fff" : "var(--muted)" }}
-                    >
+                    <p style={{ marginTop: "2px", fontSize: "14px", fontWeight: 500, color: "var(--fg)", fontVariantNumeric: "tabular-nums" }}>
                       {available !== null ? available.toFixed(4) : "—"}
                     </p>
-                    <p className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}>
+                    <p style={{ fontSize: "10px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
                       {locked !== null ? `${locked.toFixed(4)} locked` : "available"}
                     </p>
                   </div>
@@ -574,132 +591,137 @@ function TradeView({ address }: { address: string }) {
               </div>
             )}
 
-            {/* Side toggle */}
-            <Field label="Side">
-              <div
-                className="flex rounded-xl p-1 gap-1"
-                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
-              >
-                {(["BUY", "SELL"] as Side[]).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setSide(s)}
-                    className="flex-1 rounded-lg py-2.5 text-sm font-semibold transition-all duration-150"
-                    style={
-                      side === s
-                        ? s === "BUY"
-                          ? { background: "rgba(34,197,94,0.18)", color: "#4ade80", border: "1px solid rgba(34,197,94,0.28)" }
-                          : { background: "rgba(239,68,68,0.16)", color: "#f87171", border: "1px solid rgba(239,68,68,0.28)" }
-                        : { color: "rgba(255,255,255,0.35)", border: "1px solid transparent" }
-                    }
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </Field>
+            {/* Side toggle — large, prominent */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
+              {(["BUY", "SELL"] as Side[]).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSide(s)}
+                  style={{
+                    padding: "12px",
+                    borderRadius: "3px",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    letterSpacing: "0.06em",
+                    cursor: "pointer",
+                    transition: "all 0.12s ease",
+                    fontFamily: "var(--font-space-grotesk)",
+                    ...(side === s
+                      ? s === "BUY"
+                        ? { background: "var(--buy-dim)", border: "1px solid var(--buy-border)", color: "var(--buy)" }
+                        : { background: "var(--sell-dim)", border: "1px solid var(--sell-border)", color: "var(--sell)" }
+                      : { background: "transparent", border: "1px solid var(--border)", color: "var(--fg-subtle)" }
+                    ),
+                  }}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
 
             {/* Price */}
-            <Field label={`Price (${quote?.symbol ?? "quote"} per ${base?.symbol ?? "base"})`}>
+            <Field label={`Price (${quote?.symbol ?? "QUOTE"} per ${base?.symbol ?? "BASE"})`}>
               <input
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
                 placeholder="1.50"
-                className="w-full rounded-xl px-4 py-3 text-sm text-white outline-none"
                 style={inputStyle}
               />
             </Field>
 
             {/* Quantity */}
-            <Field label={`Quantity (${base?.symbol ?? "base"})`}>
+            <Field label={`Quantity (${base?.symbol ?? "BASE"})`}>
               <input
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
                 placeholder="10"
-                className="w-full rounded-xl px-4 py-3 text-sm text-white outline-none"
                 style={inputStyle}
               />
             </Field>
 
             {/* Time In Force */}
             <Field label="Time In Force">
-              <div className="flex flex-col gap-2">
-                <div
-                  className="flex rounded-xl p-1 gap-1"
-                  style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
-                >
-                  {(["GTC", "IOC", "FOK"] as TimeInForce[]).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setTif(t)}
-                      className="flex-1 rounded-lg py-2 text-xs font-semibold transition-all duration-150"
-                      style={
-                        tif === t
-                          ? { background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.12)" }
-                          : { color: "rgba(255,255,255,0.35)", border: "1px solid transparent" }
-                      }
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs px-1" style={{ color: "var(--muted)" }}>
-                  {TIF_INFO[tif].description}
-                </p>
+              <div style={{ display: "flex", gap: "4px" }}>
+                {(["GTC", "IOC", "FOK"] as TimeInForce[]).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTif(t)}
+                    style={{
+                      flex: 1,
+                      padding: "7px",
+                      borderRadius: "3px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      letterSpacing: "0.06em",
+                      cursor: "pointer",
+                      transition: "all 0.1s ease",
+                      fontFamily: "var(--font-space-grotesk)",
+                      ...(tif === t
+                        ? { background: "var(--bg-surface)", border: "1px solid var(--border-strong)", color: "var(--fg)" }
+                        : { background: "transparent", border: "1px solid var(--border)", color: "var(--fg-subtle)" }
+                      ),
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
               </div>
+              <p style={{ fontSize: "11px", color: "var(--fg-subtle)", marginTop: "2px" }}>
+                {TIF_INFO[tif].description}
+              </p>
             </Field>
 
-            {/* Preview */}
-            {selectedMarket && base && quote && (
+            {/* Preview strip */}
+            {selectedMarket && base && quote && (price || qty) && (
               <div
-                className="rounded-2xl px-4 py-4"
-                style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.06)" }}
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "12px 20px",
+                  padding: "10px 12px",
+                  borderRadius: "3px",
+                  background: "var(--bg-surface)",
+                  border: "1px solid var(--border)",
+                }}
               >
-                <p className="text-xs font-semibold uppercase tracking-[0.14em]" style={{ color: "var(--muted)" }}>
-                  Order preview
-                </p>
-                <div className="mt-3 flex flex-col gap-1.5">
-                  {[
-                    `Side: ${side}`,
-                    `Price: ${price || "—"} ${quote.symbol}/${base.symbol}`,
-                    `Quantity: ${qty || "—"} ${base.symbol}`,
-                    `Type: ${TIF_INFO[tif].label}`,
-                    price && qty
-                      ? lockedAmountPreview(side, price, qty, selectedMarket, marketsData?.tokens ?? [])
-                      : "Locked: —",
-                  ].map((line) => (
-                    <p key={line} className="text-sm" style={{ color: "rgba(255,255,255,0.72)" }}>
-                      {line}
-                    </p>
-                  ))}
-                </div>
+                {[
+                  { k: "Side",     v: side },
+                  { k: "Price",    v: price ? `${price} ${quote.symbol}/${base.symbol}` : "—" },
+                  { k: "Qty",      v: qty ? `${qty} ${base.symbol}` : "—" },
+                  { k: "TIF",      v: tif },
+                  { k: "Locks",    v: price && qty ? lockedAmountPreview(side, price, qty, selectedMarket, marketsData?.tokens ?? []) : "—" },
+                  { k: "Fee",      v: config ? `${config.feeWei} wei` : "—" },
+                ].map(({ k, v }) => (
+                  <div key={k}>
+                    <span style={{ fontSize: "10px", color: "var(--fg-subtle)", letterSpacing: "0.08em", textTransform: "uppercase", display: "block" }}>{k}</span>
+                    <span style={{ fontSize: "12px", color: "var(--fg)", fontVariantNumeric: "tabular-nums" }}>{v}</span>
+                  </div>
+                ))}
               </div>
             )}
 
-            {/* Insufficient funds warning */}
+            {/* Insufficient funds */}
             {insufficientFunds && (
               <div
-                className="rounded-xl px-4 py-3 text-sm"
                 style={{
-                  background: "rgba(239,68,68,0.08)",
-                  border: "1px solid rgba(239,68,68,0.2)",
-                  color: "#f87171",
+                  padding: "8px 12px",
+                  borderRadius: "3px",
+                  fontSize: "11px",
+                  background: "var(--sell-dim)",
+                  border: "1px solid var(--sell-border)",
+                  color: "var(--sell)",
                 }}
               >
                 {side === "BUY" && quote && quoteBalanceRaw
                   ? (() => {
                       try {
-                        const needed = formatUnits(
-                          parseAmountInput(price, quote.decimals) * BigInt(Math.floor(qtyFloat)),
-                          quote.decimals,
-                        );
+                        const needed = formatUnits(parseAmountInput(price, quote.decimals) * BigInt(Math.floor(qtyFloat)), quote.decimals);
                         const have = formatUnits(BigInt(quoteBalanceRaw.available), quote.decimals);
-                        return `Insufficient ${quote.symbol}. Need ${needed}, have ${have}.`;
-                      } catch {
-                        return `Insufficient ${quote?.symbol} balance.`;
-                      }
+                        return `Insufficient ${quote.symbol} — need ${needed}, have ${have}`;
+                      } catch { return `Insufficient ${quote?.symbol} balance`; }
                     })()
-                  : `Insufficient ${base?.symbol} balance. Need ${qtyFloat.toFixed(4)}, have ${(baseAvailable ?? 0).toFixed(4)}.`}
+                  : `Insufficient ${base?.symbol} — need ${qtyFloat.toFixed(4)}, have ${(baseAvailable ?? 0).toFixed(4)}`
+                }
               </div>
             )}
 
@@ -707,36 +729,61 @@ function TradeView({ address }: { address: string }) {
             <button
               onClick={() => void handlePlaceOrder()}
               disabled={!canPlace}
-              className="rounded-xl px-4 py-3 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
-              style={
-                side === "BUY"
-                  ? {
-                      background: "linear-gradient(135deg, rgba(34,197,94,0.24), rgba(34,197,94,0.14))",
-                      border: "1px solid rgba(34,197,94,0.24)",
-                      color: "#dcfce7",
-                    }
-                  : {
-                      background: "linear-gradient(135deg, rgba(239,68,68,0.2), rgba(239,68,68,0.12))",
-                      border: "1px solid rgba(239,68,68,0.22)",
-                      color: "#fee2e2",
-                    }
-              }
+              style={{
+                padding: "13px",
+                borderRadius: "3px",
+                fontSize: "13px",
+                fontWeight: 700,
+                letterSpacing: "0.04em",
+                cursor: canPlace ? "pointer" : "not-allowed",
+                opacity: canPlace ? 1 : 0.4,
+                transition: "opacity 0.15s",
+                fontFamily: "var(--font-space-grotesk)",
+                ...(side === "BUY"
+                  ? { background: "var(--buy-dim)", border: "1px solid var(--buy-border)", color: "var(--buy)" }
+                  : { background: "var(--sell-dim)", border: "1px solid var(--sell-border)", color: "var(--sell)" }
+                ),
+              }}
             >
-              {placePending ? "Placing…" : `Place ${side} order`}
+              {placePending ? "Placing…" : `Place ${side} Order`}
             </button>
 
             <ActionBanner state={placeState} />
           </div>
         </Card>
 
-        {/* ── Active Orders ────────────────────────────────────────────── */}
+        {/* ── Right column: Chart + Active Orders ─────────────────────── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+
+        {/* Chart */}
+        <Card>
+          <CardHeader>
+            <div style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
+              <CardTitle>XRP / USDT</CardTitle>
+              <span style={{ fontSize: "10px", color: "var(--fg-subtle)", letterSpacing: "0.06em" }}>
+                1H · Binance
+              </span>
+            </div>
+          </CardHeader>
+          <XRPChart />
+        </Card>
+
+        {/* Active Orders */}
         <Card>
           <CardHeader>
             <CardTitle>Active Orders</CardTitle>
             <button
               onClick={() => void loadOrders()}
-              className="text-xs font-medium transition-opacity hover:opacity-70"
-              style={{ color: "var(--muted)" }}
+              style={{
+                fontSize: "11px",
+                fontWeight: 500,
+                color: "var(--fg-muted)",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "2px 6px",
+                borderRadius: "2px",
+              }}
             >
               Refresh
             </button>
@@ -745,82 +792,122 @@ function TradeView({ address }: { address: string }) {
           {loadingOrders ? (
             <OrdersSkeleton />
           ) : activeOrders.length === 0 ? (
-            <p className="py-8 text-center text-sm" style={{ color: "var(--muted)" }}>
-              No open or partial orders.
-            </p>
+            <div style={{ padding: "40px 0", textAlign: "center" }}>
+              <p style={{ fontSize: "12px", color: "var(--fg-subtle)" }}>No active orders in the book</p>
+            </div>
           ) : (
-            <div className="flex flex-col gap-2">
-              {activeOrders.map((order) => {
-                const style = STATUS_STYLES[order.status] ?? { bg: "rgba(255,255,255,0.06)", color: "#fff" };
+            <div>
+              {/* Table header */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "52px 1fr 100px 80px 60px 64px",
+                  gap: "0 12px",
+                  padding: "6px 0 8px",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                {["Side", "Price · Qty", "Status", "TIF", "ID", ""].map((h) => (
+                  <span
+                    key={h}
+                    style={{
+                      fontSize: "10px",
+                      fontWeight: 600,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      color: "var(--fg-subtle)",
+                      fontFamily: "var(--font-space-grotesk)",
+                    }}
+                  >
+                    {h}
+                  </span>
+                ))}
+              </div>
+
+              {activeOrders.map((order, i) => {
                 const cancelState = cancelStates[order.orderId] ?? { kind: "idle" };
                 const canceling = cancelState.kind === "pending";
+                const canceled  = cancelState.kind === "success";
 
                 return (
-                  <div
-                    key={order.orderId}
-                    className="rounded-xl px-4 py-3 flex flex-col gap-2"
-                    style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)" }}
-                  >
-                    {/* Row 1: side, price, qty, status, tif */}
-                    <div className="flex flex-wrap items-center gap-2">
+                  <div key={order.orderId}>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "52px 1fr 100px 80px 60px 64px",
+                        gap: "0 12px",
+                        padding: "10px 0",
+                        borderBottom: i < activeOrders.length - 1 ? "1px solid var(--border)" : "none",
+                        alignItems: "center",
+                      }}
+                    >
+                      {/* Side */}
                       <span
-                        className="text-xs font-semibold px-2 py-0.5 rounded-md"
                         style={{
-                          background: order.side === "BUY" ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.1)",
-                          color: order.side === "BUY" ? "#4ade80" : "#f87171",
+                          fontSize: "11px",
+                          fontWeight: 700,
+                          letterSpacing: "0.06em",
+                          color: order.side === "BUY" ? "var(--buy)" : "var(--sell)",
                         }}
                       >
                         {order.side}
                       </span>
 
-                      <span className="text-sm font-semibold text-white tabular-nums">
-                        {selectedMarket
-                          ? safeFormatAmount(order.price, selectedMarket.quoteDecimals)
-                          : order.price}
-                        {" "}{quote?.symbol}
-                      </span>
+                      {/* Price · Qty */}
+                      <div>
+                        <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--fg)", fontVariantNumeric: "tabular-nums" }}>
+                          {selectedMarket
+                            ? safeFormatAmount(order.price, selectedMarket.quoteDecimals)
+                            : order.price}
+                        </span>
+                        <span style={{ marginLeft: "6px", fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
+                          {selectedMarket ? safeFormatAmount(order.remainingQty, selectedMarket.baseDecimals) : order.remainingQty}
+                          {" / "}
+                          {selectedMarket ? safeFormatAmount(order.initialQty, selectedMarket.baseDecimals) : order.initialQty}
+                        </span>
+                      </div>
 
-                      <span className="text-sm tabular-nums" style={{ color: "var(--muted)" }}>
-                        {order.remainingQty}
-                        {" / "}
-                        {order.initialQty}
-                        {" "}{base?.symbol}
-                      </span>
+                      {/* Status */}
+                      <StatusPill status={order.status} />
 
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-                        style={{ background: style.bg, color: style.color }}
-                      >
-                        {order.status}
-                      </span>
-
-                      <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
+                      {/* TIF */}
+                      <span style={{ fontSize: "11px", color: "var(--fg-muted)", letterSpacing: "0.04em" }}>
                         {order.timeInForce}
                       </span>
-                    </div>
 
-                    {/* Row 2: order id + cancel button */}
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-mono" style={{ color: "rgba(255,255,255,0.3)" }}>
-                        {order.orderId.slice(0, 18)}…
+                      {/* ID */}
+                      <span style={{ fontSize: "10px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {order.orderId.slice(0, 8)}…
                       </span>
+
+                      {/* Cancel */}
                       <button
                         onClick={() => void handleCancelOrder(order.orderId)}
-                        disabled={canceling || cancelState.kind === "success"}
-                        className="rounded-lg px-3 py-1 text-xs font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={canceling || canceled}
                         style={{
-                          background: "rgba(239,68,68,0.1)",
-                          border: "1px solid rgba(239,68,68,0.2)",
-                          color: "#f87171",
+                          padding: "4px 8px",
+                          borderRadius: "2px",
+                          fontSize: "10px",
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          cursor: canceling || canceled ? "not-allowed" : "pointer",
+                          opacity: canceling || canceled ? 0.45 : 1,
+                          background: "var(--sell-dim)",
+                          border: "1px solid var(--sell-border)",
+                          color: "var(--sell)",
+                          transition: "opacity 0.15s",
+                          textTransform: "uppercase",
+                          fontFamily: "var(--font-space-grotesk)",
                         }}
                       >
-                        {canceling ? "Canceling…" : cancelState.kind === "success" ? "Canceled" : "Cancel"}
+                        {canceling ? "…" : canceled ? "Done" : "Cancel"}
                       </button>
                     </div>
 
-                    {/* Cancel state banner */}
                     {cancelState.kind !== "idle" && (
-                      <ActionBanner state={cancelState} compact />
+                      <div style={{ paddingBottom: "8px" }}>
+                        <ActionBanner state={cancelState} compact />
+                      </div>
                     )}
                   </div>
                 );
@@ -828,79 +915,41 @@ function TradeView({ address }: { address: string }) {
             </div>
           )}
         </Card>
+
+        </div>{/* end right column */}
       </div>
     </div>
   );
 }
 
-// ─── Page export ─────────────────────────────────────────────────────────────
+function StatusPill({ status }: { status: string }) {
+  const styles: Record<string, { bg: string; color: string }> = {
+    OPEN:     { bg: "var(--buy-dim)",    color: "var(--buy)"    },
+    PARTIAL:  { bg: "var(--accent-dim)", color: "var(--accent)" },
+    FILLED:   { bg: "oklch(55% 0.10 260 / 0.12)", color: "oklch(72% 0.08 260)" },
+    CANCELED: { bg: "var(--sell-dim)",   color: "var(--sell)"   },
+  };
+  const s = styles[status] ?? { bg: "var(--bg-surface)", color: "var(--fg-muted)" };
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 7px",
+        borderRadius: "2px",
+        fontSize: "10px",
+        fontWeight: 600,
+        letterSpacing: "0.06em",
+        background: s.bg,
+        color: s.color,
+        textTransform: "uppercase",
+      }}
+    >
+      {status}
+    </span>
+  );
+}
 
 export default function TradePage() {
   return <AddressGuard>{(address) => <TradeView address={address} />}</AddressGuard>;
-}
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="flex flex-col gap-2">
-      <span className="text-xs font-semibold uppercase tracking-[0.14em]" style={{ color: "var(--muted)" }}>
-        {label}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-function ActionBanner({ state, compact = false }: { state: ActionState; compact?: boolean }) {
-  if (state.kind === "idle") return null;
-
-  const palette =
-    state.kind === "success"
-      ? { background: "rgba(34,197,94,0.08)", border: "rgba(34,197,94,0.18)", color: "#86efac" }
-      : state.kind === "error"
-        ? { background: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.2)", color: "#fca5a5" }
-        : { background: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.2)", color: "#fcd34d" };
-
-  return (
-    <div
-      className="rounded-2xl px-4 py-3 text-sm"
-      style={{ background: palette.background, border: `1px solid ${palette.border}`, color: palette.color }}
-    >
-      <div className="flex flex-col gap-1">
-        {state.stage && !compact && <p className="font-semibold text-white">{state.stage}</p>}
-        {state.message && <p className={compact ? "text-xs" : ""}>{state.message}</p>}
-        {state.txHash && !compact && (
-          <p className="text-xs font-mono" style={{ color: "rgba(255,255,255,0.6)" }}>
-            tx {shortAddress(state.txHash, 10, 8)}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ErrorBanner({ message }: { message: string }) {
-  return (
-    <div
-      className="mb-6 rounded-xl px-4 py-3 text-sm"
-      style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#f87171" }}
-    >
-      {message}
-    </div>
-  );
-}
-
-function OrdersSkeleton() {
-  return (
-    <div className="flex flex-col gap-2 animate-pulse">
-      {[1, 2, 3].map((i) => (
-        <div
-          key={i}
-          className="h-16 rounded-xl"
-          style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }}
-        />
-      ))}
-    </div>
-  );
 }

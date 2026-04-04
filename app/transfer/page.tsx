@@ -1,12 +1,12 @@
 "use client";
 
 import { type ReactNode, useEffect, useState } from "react";
-import type { Address, Hex } from "viem";
-import { usePublicClient, useWriteContract } from "wagmi";
+import { isAddress, type Address, type Hex } from "viem";
+import { usePublicClient, useSignTypedData, useWriteContract } from "wagmi";
 import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  corexCustodyAbi,
+  buildWithdrawIntentTypedData,
   corexInstructionSenderAbi,
   corexTestTokenAbi,
   decodeHexJson,
@@ -18,7 +18,7 @@ import {
   parseAmountInput,
   shortAddress,
   type CorexFrontendConfig,
-  type RequestWithdrawResult,
+  type SubmitWithdrawIntentResult,
   type SyncDepositResult,
 } from "@/lib/corex";
 import {
@@ -27,6 +27,7 @@ import {
   fetchCorexConfig,
   fetchMarkets,
   fetchProxyResult,
+  submitWithdrawIntent,
 } from "@/lib/api";
 
 interface Balance {
@@ -101,9 +102,323 @@ interface ActionState {
   instructionId?: Hex;
 }
 
+// ─── Shared styles ────────────────────────────────────────────────────────────
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  borderRadius: "3px",
+  padding: "9px 12px",
+  fontSize: "13px",
+  color: "var(--fg)",
+  background: "var(--bg-surface)",
+  border: "1px solid var(--border-strong)",
+  outline: "none",
+  fontFamily: "inherit",
+};
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      <span
+        style={{
+          fontSize: "10px",
+          fontWeight: 600,
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+          color: "var(--fg-subtle)",
+          fontFamily: "var(--font-space-grotesk)",
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+      <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>{label}</span>
+      <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--fg)", fontVariantNumeric: "tabular-nums" }}>{value}</span>
+    </div>
+  );
+}
+
+function ActionBanner({ state }: { state: ActionState }) {
+  if (state.kind === "idle") return null;
+
+  const palette =
+    state.kind === "success"
+      ? { bg: "var(--buy-dim)", border: "var(--buy-border)", color: "var(--buy)" }
+      : state.kind === "error"
+        ? { bg: "var(--error-dim)", border: "var(--error-border)", color: "var(--error)" }
+        : { bg: "var(--accent-dim)", border: "var(--accent-border)", color: "var(--accent)" };
+
+  return (
+    <div
+      style={{
+        borderRadius: "3px",
+        padding: "10px 14px",
+        fontSize: "12px",
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        color: palette.color,
+      }}
+    >
+      {state.stage && (
+        <p style={{ fontWeight: 600, color: "var(--fg)", marginBottom: "4px", fontSize: "12px" }}>
+          {state.stage}
+        </p>
+      )}
+      {state.message && <p>{state.message}</p>}
+      {state.txHashes?.length ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "6px" }}>
+          {state.txHashes.map((hash) => (
+            <span
+              key={hash}
+              style={{
+                fontSize: "10px",
+                padding: "2px 7px",
+                borderRadius: "2px",
+                background: "var(--bg-surface)",
+                border: "1px solid var(--border-strong)",
+                color: "var(--fg-muted)",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              tx {shortAddress(hash, 8, 6)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {state.instructionId ? (
+        <p style={{ marginTop: "4px", fontSize: "10px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
+          instruction {shortAddress(state.instructionId, 10, 8)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div
+      style={{
+        marginBottom: "20px",
+        padding: "10px 14px",
+        borderRadius: "3px",
+        fontSize: "12px",
+        background: "var(--error-dim)",
+        border: "1px solid var(--error-border)",
+        color: "var(--error)",
+      }}
+    >
+      {message}
+    </div>
+  );
+}
+
+function TokenSelector({
+  label,
+  tokens,
+  value,
+  onChange,
+}: {
+  label: string;
+  tokens: Token[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field label={label}>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={inputStyle}
+      >
+        <option value="">Select token</option>
+        {tokens.map((token) => (
+          <option key={token.address} value={token.address}>
+            {token.symbol} · {token.role} · {shortAddress(token.address)}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
+function FlowSteps({ items, color }: { items: string[]; color: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginBottom: "16px" }}>
+      {items.map((item, i) => (
+        <div key={item} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              padding: "3px 8px",
+              borderRadius: "2px",
+              fontSize: "10px",
+              fontWeight: 600,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              background: `${color}18`,
+              border: `1px solid ${color}30`,
+              color,
+              fontFamily: "var(--font-space-grotesk)",
+            }}
+          >
+            <span style={{ fontSize: "9px", opacity: 0.7 }}>{i + 1}</span>
+            {item}
+          </span>
+          {i < items.length - 1 && (
+            <span style={{ fontSize: "10px", color: "var(--fg-subtle)" }}>→</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PreviewBox({ title, lines }: { title: string; lines: string[] }) {
+  return (
+    <div
+      style={{
+        padding: "10px 12px",
+        borderRadius: "3px",
+        background: "var(--bg-surface)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <p
+        style={{
+          fontSize: "10px",
+          fontWeight: 600,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--fg-subtle)",
+          marginBottom: "8px",
+          fontFamily: "var(--font-space-grotesk)",
+        }}
+      >
+        {title}
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+        {lines.map((line, i) => (
+          <p key={i} style={{ fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
+            {line}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BalanceSnapshot({ rows }: { rows: BalanceRow[] }) {
+  if (!rows.length) {
+    return (
+      <p style={{ fontSize: "12px", color: "var(--fg-subtle)", padding: "4px 0" }}>
+        No TEE balances yet. Successful deposits will appear here.
+      </p>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gap: "8px", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}>
+      {rows.map(({ token, balance }) => (
+        <div
+          key={token.address}
+          style={{
+            padding: "12px",
+            borderRadius: "3px",
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "10px" }}>
+            <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--fg)" }}>{token.symbol}</span>
+            <span style={{ fontSize: "9px", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--accent)" }}>{token.role}</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+            <div>
+              <span style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--fg-subtle)", display: "block" }}>Available</span>
+              <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--fg)", fontVariantNumeric: "tabular-nums" }}>
+                {formatTokenAmount(balance.available, token.decimals)}
+              </span>
+            </div>
+            <div>
+              <span style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--fg-subtle)", display: "block" }}>Locked</span>
+              <span style={{ fontSize: "12px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
+                {formatTokenAmount(balance.locked, token.decimals)}
+              </span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SkeletonGrid() {
+  return (
+    <div style={{ display: "grid", gap: "20px", gridTemplateColumns: "1fr 1fr" }}>
+      {[1, 2].map((i) => (
+        <div
+          key={i}
+          style={{
+            height: "480px",
+            borderRadius: "4px",
+            background: "var(--bg-raised)",
+            border: "1px solid var(--border)",
+            animation: "pulse 2s cubic-bezier(0.4,0,0.6,1) infinite",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function findToken(tokens: Token[] | undefined, address: string | undefined) {
+  if (!tokens || !address) return undefined;
+  return tokens.find((t) => t.address.toLowerCase() === address.toLowerCase());
+}
+
+function findBalance(balances: Record<string, Balance> | undefined, tokenAddress: string | undefined) {
+  if (!balances || !tokenAddress) return undefined;
+  const entry = Object.entries(balances).find(([a]) => a.toLowerCase() === tokenAddress.toLowerCase());
+  return entry?.[1];
+}
+
+function getBalanceRows(balances: Record<string, Balance> | undefined, tokens: Token[] | undefined): BalanceRow[] {
+  if (!balances || !tokens) return [];
+  return tokens.flatMap((token) => {
+    const balance = findBalance(balances, token.address);
+    return balance ? [{ token, balance }] : [];
+  });
+}
+
+function parseAmountLabel(value: string, decimals: number) {
+  try { return parseAmountInput(value, decimals).toString(); }
+  catch { return "invalid"; }
+}
+
+function assertSuccessfulReceipt(receipt: { status: "success" | "reverted"; transactionHash: Hex }, action: string) {
+  if (receipt.status === "success") return;
+  throw new Error(`${action} transaction reverted: ${receipt.transactionHash}`);
+}
+
+// ─── Main view ────────────────────────────────────────────────────────────────
+
 function TransferView({ address }: { address: string }) {
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
+  const { signTypedDataAsync } = useSignTypedData();
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [config, setConfig] = useState<CorexFrontendConfig | null>(null);
@@ -128,62 +443,40 @@ function TransferView({ address }: { address: string }) {
   const [depositWalletBalanceError, setDepositWalletBalanceError] = useState<string | null>(null);
   const [depositWalletBalanceVersion, setDepositWalletBalanceVersion] = useState(0);
 
-  useEffect(() => {
-    void loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address]);
-
-  useEffect(() => {
-    if (!recipient) {
-      setRecipient(address);
-    }
-  }, [address, recipient]);
+  useEffect(() => { void loadAll(); }, [address]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!recipient) setRecipient(address); }, [address, recipient]);
 
   useEffect(() => {
     const tokens = snapshot?.markets.tokens ?? [];
     if (!tokens.length) return;
-
-    const defaultToken = tokens.find((token) => token.role === "QUOTE") ?? tokens[0];
+    const defaultToken = tokens.find((t) => t.role === "QUOTE") ?? tokens[0];
     if (!depositToken) setDepositToken(defaultToken.address);
     if (!withdrawToken) setWithdrawToken(defaultToken.address);
   }, [depositToken, snapshot, withdrawToken]);
 
-  const depositTokenMeta = findToken(snapshot?.markets.tokens, depositToken);
+  const depositTokenMeta  = findToken(snapshot?.markets.tokens, depositToken);
   const withdrawTokenMeta = findToken(snapshot?.markets.tokens, withdrawToken);
-  const depositBalance = findBalance(snapshot?.account.balances, depositTokenMeta?.address);
-  const withdrawBalance = findBalance(snapshot?.account.balances, withdrawTokenMeta?.address);
-  const balanceRows = getBalanceRows(snapshot?.account.balances, snapshot?.markets.tokens);
+  const depositBalance    = findBalance(snapshot?.account.balances, depositTokenMeta?.address);
+  const withdrawBalance   = findBalance(snapshot?.account.balances, withdrawTokenMeta?.address);
+  const balanceRows       = getBalanceRows(snapshot?.account.balances, snapshot?.markets.tokens);
+  const nextWithdrawNonce = snapshot
+    ? (BigInt(snapshot.account.withdrawNonce) + BigInt(1)).toString()
+    : null;
 
   useEffect(() => {
     if (!config || !publicClient) return;
-
     let cancelled = false;
     Promise.all([
-      publicClient.readContract({
-        address: config.instructionSender,
-        abi: corexInstructionSenderAbi,
-        functionName: "getSelectedTeeIds",
-      }),
-      publicClient.readContract({
-        address: config.instructionSender,
-        abi: corexInstructionSenderAbi,
-        functionName: "teeExtensionRegistry",
-      }),
+      publicClient.readContract({ address: config.instructionSender, abi: corexInstructionSenderAbi, functionName: "getSelectedTeeIds" }),
+      publicClient.readContract({ address: config.instructionSender, abi: corexInstructionSenderAbi, functionName: "teeExtensionRegistry" }),
     ])
       .then(([teeIds, registryAddress]) => {
         if (cancelled) return;
         setSelectedTeeIds(teeIds);
         setTeeExtensionRegistryAddress(registryAddress);
       })
-      .catch(() => {
-        if (cancelled) return;
-        setSelectedTeeIds([]);
-        setTeeExtensionRegistryAddress(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => { if (!cancelled) { setSelectedTeeIds([]); setTeeExtensionRegistryAddress(null); } });
+    return () => { cancelled = true; };
   }, [config, publicClient]);
 
   useEffect(() => {
@@ -193,51 +486,29 @@ function TransferView({ address }: { address: string }) {
       setDepositWalletBalanceLoading(false);
       return;
     }
-
     let cancelled = false;
     setDepositWalletBalanceLoading(true);
     setDepositWalletBalanceError(null);
-
     publicClient
-      .readContract({
-        address: depositTokenMeta.address as Address,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [address as Address],
-      })
-      .then((balance) => {
-        if (cancelled) return;
-        setDepositWalletBalance(balance);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setDepositWalletBalance(null);
-        setDepositWalletBalanceError(getErrorMessage(error));
-      })
-      .finally(() => {
-        if (!cancelled) setDepositWalletBalanceLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+      .readContract({ address: depositTokenMeta.address as Address, abi: erc20Abi, functionName: "balanceOf", args: [address as Address] })
+      .then((balance) => { if (!cancelled) setDepositWalletBalance(balance); })
+      .catch((error) => { if (!cancelled) { setDepositWalletBalance(null); setDepositWalletBalanceError(getErrorMessage(error)); } })
+      .finally(() => { if (!cancelled) setDepositWalletBalanceLoading(false); });
+    return () => { cancelled = true; };
   }, [address, depositTokenMeta, depositWalletBalanceVersion, publicClient]);
 
-  const actionsDisabled =
+  const depositActionsDisabled =
     !config || !publicClient || selectedTeeIds.length === 0 || loading;
+  const withdrawActionsDisabled = !config || loading;
+  const mintActionsDisabled = !config || !publicClient || loading;
 
   async function loadAll() {
     setLoading(true);
     setLoadError(null);
-
     try {
       const [markets, account, activity, corexConfig] = await Promise.all([
-        fetchMarkets(),
-        fetchAccount(address),
-        fetchActivity(address),
-        fetchCorexConfig(),
+        fetchMarkets(), fetchAccount(address), fetchActivity(address), fetchCorexConfig(),
       ]);
-
       setSnapshot({ markets, account, activity });
       setConfig(corexConfig);
     } catch (error) {
@@ -248,187 +519,101 @@ function TransferView({ address }: { address: string }) {
   }
 
   async function refreshAccountSnapshot() {
-    const [account, activity] = await Promise.all([
-      fetchAccount(address),
-      fetchActivity(address),
-    ]);
-
-    setSnapshot((current) =>
-      current
-        ? {
-            ...current,
-            account,
-            activity,
-          }
-        : null,
-    );
+    const [account, activity] = await Promise.all([fetchAccount(address), fetchActivity(address)]);
+    setSnapshot((current) => current ? { ...current, account, activity } : null);
   }
 
   async function handleDeposit() {
     if (!config || !publicClient || !depositTokenMeta) return;
-
     try {
       const amount = parseAmountInput(depositAmount, depositTokenMeta.decimals);
       const token = depositTokenMeta.address as Address;
 
-      setDepositState({
-        kind: "pending",
-        stage: "Approving token",
-        message: `Authorizing ${depositTokenMeta.symbol} for Corex custody.`,
-      });
+      setDepositState({ kind: "pending", stage: "Approving token", message: `Authorizing ${depositTokenMeta.symbol} for Corex custody.` });
 
-      const approveHash = await writeContractAsync({
-        chainId: config.chainId,
-        address: token,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [config.custodyAddress, amount],
-      });
-      const approveReceipt = await publicClient.waitForTransactionReceipt({
-        hash: approveHash,
-      });
+      const approveHash = await writeContractAsync({ chainId: config.chainId, address: token, abi: erc20Abi, functionName: "approve", args: [config.custodyAddress, amount] });
+      const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash });
       assertSuccessfulReceipt(approveReceipt, "approve");
 
-      setDepositState({
-        kind: "pending",
-        stage: "Depositing and syncing",
-        message: `Escrowing ${depositTokenMeta.symbol} in custody and dispatching the TEE credit in one transaction.`,
-        txHashes: [approveHash],
-      });
+      setDepositState({ kind: "pending", stage: "Depositing and syncing", message: `Escrowing ${depositTokenMeta.symbol} and dispatching TEE credit.`, txHashes: [approveHash] });
 
-      const depositHash = await writeContractAsync({
-        chainId: config.chainId,
-        address: config.instructionSender,
-        abi: corexInstructionSenderAbi,
-        functionName: "depositAndSync",
-        args: [token, amount],
-        value: BigInt(config.feeWei),
-      });
-      const depositReceipt = await publicClient.waitForTransactionReceipt({
-        hash: depositHash,
-      });
+      const depositHash = await writeContractAsync({ chainId: config.chainId, address: config.instructionSender, abi: corexInstructionSenderAbi, functionName: "depositAndSync", args: [token, amount], value: BigInt(config.feeWei) });
+      const depositReceipt = await publicClient.waitForTransactionReceipt({ hash: depositHash });
       assertSuccessfulReceipt(depositReceipt, "depositAndSync");
-      const instructionId = getInstructionIdFromReceipt(
-        depositReceipt,
-        teeExtensionRegistryAddress ?? undefined,
-      );
+
+      const instructionId = getInstructionIdFromReceipt(depositReceipt, teeExtensionRegistryAddress ?? undefined);
       const proxyPayload = await fetchProxyResult(instructionId);
       const actionResult = normalizeProxyActionResult(proxyPayload);
 
-      if (actionResult.status !== 1 || !actionResult.data) {
-        throw new Error(actionResult.log ?? "TEE depositAndSync failed");
-      }
+      if (actionResult.status !== 1 || !actionResult.data) throw new Error(actionResult.log ?? "TEE depositAndSync failed");
 
       const synced = decodeHexJson<SyncDepositResult>(actionResult.data);
       await refreshAccountSnapshot();
-      setDepositWalletBalanceVersion((current) => current + 1);
+      setDepositWalletBalanceVersion((v) => v + 1);
       setDepositAmount("");
-      setDepositState({
-        kind: "success",
-        stage: "Deposit settled",
-        message: `Deposit ${shortAddress(synced.depositId)} is now visible in the TEE session balance.`,
-        txHashes: [approveHash, depositHash],
-        instructionId,
-      });
+      setDepositState({ kind: "success", stage: "Deposit settled", message: `Deposit ${shortAddress(synced.depositId)} is now in the TEE session balance.`, txHashes: [approveHash, depositHash], instructionId });
     } catch (error) {
-      setDepositState({
-        kind: "error",
-        stage: "Deposit failed",
-        message: getErrorMessage(error),
-      });
+      setDepositState({ kind: "error", stage: "Deposit failed", message: getErrorMessage(error) });
     }
   }
 
   async function handleWithdraw() {
-    if (!config || !publicClient || !withdrawTokenMeta) return;
-
+    if (!config || !withdrawTokenMeta || !snapshot) return;
     try {
       const amount = parseAmountInput(withdrawAmount, withdrawTokenMeta.decimals);
       const user = address as Address;
       const token = withdrawTokenMeta.address as Address;
-      const recipientAddress = recipient.trim() as Address;
-
-      setWithdrawState({
-        kind: "pending",
-        stage: "Requesting TEE authorization",
-        message: "Calling requestWithdraw() and waiting for the signed withdrawal.",
-      });
-
-      const requestHash = await writeContractAsync({
-        chainId: config.chainId,
-        address: config.instructionSender,
-        abi: corexInstructionSenderAbi,
-        functionName: "requestWithdraw",
-        args: [
-          {
-            user,
-            token,
-            amount,
-            recipient: recipientAddress,
-          },
-        ],
-        value: BigInt(config.feeWei),
-      });
-
-      const requestReceipt = await publicClient.waitForTransactionReceipt({
-        hash: requestHash,
-      });
-      assertSuccessfulReceipt(requestReceipt, "requestWithdraw");
-      const instructionId = getInstructionIdFromReceipt(
-        requestReceipt,
-        teeExtensionRegistryAddress ?? undefined,
-      );
-      const proxyPayload = await fetchProxyResult(instructionId);
-      const actionResult = normalizeProxyActionResult(proxyPayload);
-
-      if (actionResult.status !== 1 || !actionResult.data) {
-        throw new Error(actionResult.log ?? "TEE requestWithdraw failed");
+      const recipientValue = recipient.trim();
+      if (!isAddress(recipientValue)) {
+        throw new Error("Recipient must be a valid address");
       }
-
-      const authorization = decodeHexJson<RequestWithdrawResult>(actionResult.data);
+      const recipientAddress = recipientValue as Address;
+      const nonce = BigInt(snapshot.account.withdrawNonce) + BigInt(1);
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + 15 * 60);
 
       setWithdrawState({
         kind: "pending",
-        stage: "Finalizing on-chain",
-        message: "Submitting finalizeWithdraw() with the TEE signature.",
-        txHashes: [requestHash],
-        instructionId,
+        stage: "Signing withdraw intent",
+        message: "Authorizing the EIP-712 withdraw payload in your wallet.",
       });
 
-      const finalizeHash = await writeContractAsync({
-        chainId: config.chainId,
-        address: config.custodyAddress,
-        abi: corexCustodyAbi,
-        functionName: "finalizeWithdraw",
-        args: [
+      const signature = await signTypedDataAsync(
+        buildWithdrawIntentTypedData(config, {
           user,
-          recipientAddress,
           token,
           amount,
-          BigInt(authorization.withdrawNonce),
-          authorization.teeAuth,
-        ],
+          recipient: recipientAddress,
+          nonce,
+          deadline,
+        }),
+      );
+
+      setWithdrawState({
+        kind: "pending",
+        stage: "Submitting to TEE",
+        message: "Posting the signed intent to the TEE runtime and waiting for on-chain finalization.",
       });
 
-      const finalizeReceipt = await publicClient.waitForTransactionReceipt({
-        hash: finalizeHash,
-      });
-      assertSuccessfulReceipt(finalizeReceipt, "finalizeWithdraw");
+      const settled = await submitWithdrawIntent({
+        user,
+        token,
+        amount: amount.toString(),
+        recipient: recipientAddress,
+        nonce: nonce.toString(),
+        deadline: deadline.toString(),
+        signature,
+      }) as SubmitWithdrawIntentResult;
+
       await refreshAccountSnapshot();
       setWithdrawAmount("");
       setWithdrawState({
         kind: "success",
         stage: "Withdrawal finalized",
-        message: `Nonce ${authorization.withdrawNonce} consumed and custody released to ${shortAddress(recipientAddress)}.`,
-        txHashes: [requestHash, finalizeHash],
-        instructionId,
+        message: `Nonce ${settled.withdrawNonce} consumed, TEE finalized custody release to ${shortAddress(recipientAddress)}.`,
+        txHashes: [settled.finalizeTxHash],
       });
     } catch (error) {
-      setWithdrawState({
-        kind: "error",
-        stage: "Withdrawal failed",
-        message: getErrorMessage(error),
-      });
+      setWithdrawState({ kind: "error", stage: "Withdrawal failed", message: getErrorMessage(error) });
     }
   }
 
@@ -436,78 +621,66 @@ function TransferView({ address }: { address: string }) {
     if (!config || !publicClient) return;
     const mintTokenMeta = findToken(snapshot?.markets.tokens, mintToken);
     if (!mintTokenMeta) return;
-
     try {
       const amount = parseAmountInput(mintAmount, mintTokenMeta.decimals);
-
-      setMintState({
-        kind: "pending",
-        stage: "Minting tokens",
-        message: `Minting ${mintAmount} ${mintTokenMeta.symbol} to your wallet.`,
-      });
-
-      const mintHash = await writeContractAsync({
-        chainId: config.chainId,
-        address: mintTokenMeta.address as Address,
-        abi: corexTestTokenAbi,
-        functionName: "mint",
-        args: [address as Address, amount],
-      });
-
+      setMintState({ kind: "pending", stage: "Minting tokens", message: `Minting ${mintAmount} ${mintTokenMeta.symbol} to your wallet.` });
+      const mintHash = await writeContractAsync({ chainId: config.chainId, address: mintTokenMeta.address as Address, abi: corexTestTokenAbi, functionName: "mint", args: [address as Address, amount] });
       const mintReceipt = await publicClient.waitForTransactionReceipt({ hash: mintHash });
       assertSuccessfulReceipt(mintReceipt, "mint");
-
-      setDepositWalletBalanceVersion((current) => current + 1);
+      setDepositWalletBalanceVersion((v) => v + 1);
       setMintAmount("");
-      setMintState({
-        kind: "success",
-        stage: "Tokens minted",
-        message: `${mintAmount} ${mintTokenMeta.symbol} minted to your wallet.`,
-        txHashes: [mintHash],
-      });
+      setMintState({ kind: "success", stage: "Tokens minted", message: `${mintAmount} ${mintTokenMeta.symbol} minted to your wallet.`, txHashes: [mintHash] });
     } catch (error) {
-      setMintState({
-        kind: "error",
-        stage: "Mint failed",
-        message: getErrorMessage(error),
-      });
+      setMintState({ kind: "error", stage: "Mint failed", message: getErrorMessage(error) });
     }
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-      <div className="mb-8 flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-white">
+    <div className="mx-auto px-5 py-8 sm:px-7" style={{ maxWidth: "1400px" }}>
+      {/* Header */}
+      <div style={{ marginBottom: "28px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <h1
+            style={{
+              fontFamily: "var(--font-space-grotesk)",
+              fontSize: "22px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--fg)",
+              margin: 0,
+            }}
+          >
             Deposit & Withdraw
           </h1>
           <span
-            className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold"
             style={{
-              background: "rgba(245,158,11,0.14)",
-              border: "1px solid rgba(245,158,11,0.24)",
-              color: "#fbbf24",
+              fontSize: "10px",
+              fontWeight: 600,
+              letterSpacing: "0.1em",
+              padding: "2px 7px",
+              borderRadius: "2px",
+              background: "var(--accent-dim)",
+              border: "1px solid var(--accent-border)",
+              color: "var(--accent)",
+              textTransform: "uppercase",
             }}
           >
-            custody + TEE flow
+            Custody + TEE
           </span>
         </div>
-        <p className="text-sm font-mono" style={{ color: "var(--muted)" }}>
+        <p style={{ marginTop: "4px", fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
           {address}
         </p>
-        <p className="max-w-3xl text-sm leading-6" style={{ color: "rgba(255,255,255,0.68)" }}>
-          Deposits now use one public contract entrypoint:
-          <span className="text-white"> approve(custody)</span> then
-          <span className="text-white"> depositAndSync()</span>, which escrows tokens first and
-          only then dispatches the TEE credit instruction. Withdrawals do the reverse: the TEE signs an authorization through
-          <span className="text-white"> requestWithdraw()</span>, then custody releases funds with
-          <span className="text-white"> finalizeWithdraw()</span>.
+        <p style={{ marginTop: "8px", maxWidth: "680px", fontSize: "12px", lineHeight: 1.6, color: "var(--fg-muted)" }}>
+          Deposits: <span style={{ color: "var(--fg)" }}>approve(custody)</span> → <span style={{ color: "var(--fg)" }}>depositAndSync()</span> escrows tokens then dispatches the TEE credit.
+          Withdrawals: your wallet signs an <span style={{ color: "var(--fg)" }}>EIP-712 WithdrawIntent</span>, then the TEE verifies it over REST and submits <span style={{ color: "var(--fg)" }}>finalizeWithdraw()</span>.
         </p>
       </div>
 
       {loadError && <ErrorBanner message={loadError} />}
 
-      <div className="mb-6 grid gap-4 lg:grid-cols-3">
+      {/* Info strip */}
+      <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(3, 1fr)", marginBottom: "20px" }}>
         <Card>
           <CardHeader>
             <CardTitle>Contracts</CardTitle>
@@ -521,23 +694,25 @@ function TransferView({ address }: { address: string }) {
           <CardHeader>
             <CardTitle>TEE Routing</CardTitle>
           </CardHeader>
-          <div className="flex items-center gap-2">
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
             <span
-              className="inline-flex h-2.5 w-2.5 rounded-full"
               style={{
-                background: selectedTeeIds.length > 0 ? "#22c55e" : "#ef4444",
+                display: "inline-block",
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                background: selectedTeeIds.length > 0 ? "var(--buy)" : "var(--sell)",
+                flexShrink: 0,
               }}
             />
-            <span className="text-sm text-white">
-              {selectedTeeIds.length > 0
-                ? `${selectedTeeIds.length} TEE selected`
-                : "No TEE selected"}
+            <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--fg)" }}>
+              {selectedTeeIds.length > 0 ? `${selectedTeeIds.length} TEE selected` : "No TEE selected"}
             </span>
           </div>
-          <p className="mt-3 text-sm leading-6" style={{ color: "var(--muted)" }}>
+          <p style={{ fontSize: "11px", color: "var(--fg-muted)", lineHeight: 1.5 }}>
             {selectedTeeIds.length > 0
-              ? `Instructions will route through ${shortAddress(selectedTeeIds[0])}.`
-              : "Run selectTee() in the deployed CorexInstructionSender before using this page."}
+              ? `Routing through ${shortAddress(selectedTeeIds[0])}.`
+              : "Run selectTee() in the deployed CorexInstructionSender."}
           </p>
         </Card>
 
@@ -545,253 +720,173 @@ function TransferView({ address }: { address: string }) {
           <CardHeader>
             <CardTitle>Session State</CardTitle>
           </CardHeader>
-          <Metric
-            label="Withdraw nonce"
-            value={snapshot?.account.withdrawNonce ?? "0"}
-          />
-          <Metric
-            label="Deposits"
-            value={String(snapshot?.activity.deposits.length ?? 0)}
-          />
-          <Metric
-            label="Withdrawals"
-            value={String(snapshot?.activity.withdrawals.length ?? 0)}
-          />
+          <Metric label="Withdraw nonce" value={snapshot?.account.withdrawNonce ?? "0"} />
+          <Metric label="Deposits" value={String(snapshot?.activity.deposits.length ?? 0)} />
+          <Metric label="Withdrawals" value={String(snapshot?.activity.withdrawals.length ?? 0)} />
         </Card>
       </div>
 
-      {!loading ? (
-        <Card className="mb-6">
+      {/* TEE Balances */}
+      {!loading && (
+        <Card className="mb-5">
           <CardHeader>
             <CardTitle>Your TEE Balances</CardTitle>
           </CardHeader>
           <BalanceSnapshot rows={balanceRows} />
         </Card>
-      ) : null}
+      )}
 
+      {/* Deposit & Withdraw */}
       {loading ? (
         <SkeletonGrid />
       ) : (
-        <div className="grid gap-6 xl:grid-cols-2">
+        <div style={{ display: "grid", gap: "20px", gridTemplateColumns: "1fr 1fr" }}>
+          {/* Deposit */}
           <Card>
             <CardHeader>
               <CardTitle>Deposit</CardTitle>
             </CardHeader>
-
-            <FlowPillGroup
-              items={[
-                "approve token",
-                "deposit and sync",
-                "poll tee result",
-              ]}
-              tint="rgba(34,197,94,0.12)"
-              border="rgba(34,197,94,0.18)"
-              color="#4ade80"
-            />
-
-            <div className="mt-5 flex flex-col gap-4">
-              <TokenSelector
-                label="Token"
-                tokens={snapshot?.markets.tokens ?? []}
-                value={depositToken}
-                onChange={setDepositToken}
-              />
-
+            <FlowSteps items={["approve token", "deposit + sync", "poll TEE"]} color="var(--buy)" />
+            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <TokenSelector label="Token" tokens={snapshot?.markets.tokens ?? []} value={depositToken} onChange={setDepositToken} />
               <Field label="Amount">
-                <input
-                  value={depositAmount}
-                  onChange={(event) => setDepositAmount(event.target.value)}
-                  placeholder="10.5"
-                  className="w-full rounded-xl px-4 py-3 text-sm text-white outline-none"
-                  style={inputStyle}
-                />
+                <input value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="10.5" style={inputStyle} />
               </Field>
-
               <PreviewBox
-                title={depositTokenMeta ? `${depositTokenMeta.symbol} deposit preview` : "Deposit preview"}
+                title={depositTokenMeta ? `${depositTokenMeta.symbol} preview` : "Deposit preview"}
                 lines={[
                   depositWalletBalanceLoading
-                    ? "Wallet balance on-chain: loading…"
+                    ? "Wallet balance: loading…"
                     : depositWalletBalance !== null && depositTokenMeta
-                      ? `Wallet balance on-chain: ${formatTokenAmount(
-                          depositWalletBalance.toString(),
-                          depositTokenMeta.decimals,
-                        )}`
+                      ? `Wallet balance: ${formatTokenAmount(depositWalletBalance.toString(), depositTokenMeta.decimals)}`
                       : depositWalletBalanceError
-                        ? `Wallet balance on-chain: unavailable (${depositWalletBalanceError})`
-                        : "Wallet balance on-chain: select a token",
+                        ? `Wallet balance: unavailable`
+                        : "Wallet balance: select a token",
                   depositBalance && depositTokenMeta
-                    ? `Current TEE available: ${formatTokenAmount(
-                        depositBalance.available,
-                        depositTokenMeta.decimals,
-                      )} · locked: ${formatTokenAmount(
-                        depositBalance.locked,
-                        depositTokenMeta.decimals,
-                      )}`
-                    : "Current TEE balance: none tracked yet",
-                  depositTokenMeta
-                    ? `Decimals: ${depositTokenMeta.decimals}`
-                    : "Select a token",
+                    ? `TEE available: ${formatTokenAmount(depositBalance.available, depositTokenMeta.decimals)} · locked: ${formatTokenAmount(depositBalance.locked, depositTokenMeta.decimals)}`
+                    : "TEE balance: none tracked yet",
                   depositAmount && depositTokenMeta
                     ? `Raw amount: ${parseAmountLabel(depositAmount, depositTokenMeta.decimals)}`
                     : "Raw amount: —",
-                  depositBalance && depositTokenMeta
-                    ? `TEE balance after sync will add to ${formatTokenAmount(
-                        depositBalance.available,
-                        depositTokenMeta.decimals,
-                      )} available`
-                    : "TEE balance will update after depositAndSync() succeeds",
                 ]}
               />
-
               <button
                 onClick={() => void handleDeposit()}
-                disabled={actionsDisabled || !depositTokenMeta || !depositAmount || depositState.kind === "pending"}
-                className="rounded-xl px-4 py-3 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={depositActionsDisabled || !depositTokenMeta || !depositAmount || depositState.kind === "pending"}
                 style={{
-                  background: "linear-gradient(135deg, rgba(34,197,94,0.24), rgba(34,197,94,0.14))",
-                  border: "1px solid rgba(34,197,94,0.24)",
-                  color: "#dcfce7",
+                  padding: "11px",
+                  borderRadius: "3px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  cursor: "pointer",
+                  opacity: depositActionsDisabled || !depositTokenMeta || !depositAmount || depositState.kind === "pending" ? 0.4 : 1,
+                  background: "var(--buy-dim)",
+                  border: "1px solid var(--buy-border)",
+                  color: "var(--buy)",
+                  fontFamily: "var(--font-space-grotesk)",
+                  transition: "opacity 0.15s",
                 }}
               >
                 Approve, deposit, sync
               </button>
-
               <ActionBanner state={depositState} />
             </div>
           </Card>
 
+          {/* Withdraw */}
           <Card>
             <CardHeader>
               <CardTitle>Withdraw</CardTitle>
             </CardHeader>
-
-            <FlowPillGroup
-              items={[
-                "request TEE signature",
-                "poll proxy result",
-                "finalize in custody",
-              ]}
-              tint="rgba(239,68,68,0.1)"
-              border="rgba(239,68,68,0.18)"
-              color="#f87171"
-            />
-
-            <div className="mt-5 flex flex-col gap-4">
-              <TokenSelector
-                label="Token"
-                tokens={snapshot?.markets.tokens ?? []}
-                value={withdrawToken}
-                onChange={setWithdrawToken}
-              />
-
+            <FlowSteps items={["sign intent", "POST to TEE", "TEE finalizes"]} color="var(--sell)" />
+            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <TokenSelector label="Token" tokens={snapshot?.markets.tokens ?? []} value={withdrawToken} onChange={setWithdrawToken} />
               <Field label="Amount">
-                <input
-                  value={withdrawAmount}
-                  onChange={(event) => setWithdrawAmount(event.target.value)}
-                  placeholder="5"
-                  className="w-full rounded-xl px-4 py-3 text-sm text-white outline-none"
-                  style={inputStyle}
-                />
+                <input value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} placeholder="5" style={inputStyle} />
               </Field>
-
               <Field label="Recipient">
-                <input
-                  value={recipient}
-                  onChange={(event) => setRecipient(event.target.value)}
-                  placeholder="0x..."
-                  className="w-full rounded-xl px-4 py-3 text-sm font-mono text-white outline-none"
-                  style={inputStyle}
-                />
+                <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="0x..." style={{ ...inputStyle, fontVariantNumeric: "tabular-nums" }} />
               </Field>
-
               <PreviewBox
-                title={withdrawTokenMeta ? `${withdrawTokenMeta.symbol} withdraw preview` : "Withdraw preview"}
+                title={withdrawTokenMeta ? `${withdrawTokenMeta.symbol} preview` : "Withdraw preview"}
                 lines={[
                   withdrawBalance && withdrawTokenMeta
-                    ? `Available in TEE: ${formatTokenAmount(withdrawBalance.available, withdrawTokenMeta.decimals)}`
-                    : "Available in TEE: none tracked yet",
+                    ? `TEE available: ${formatTokenAmount(withdrawBalance.available, withdrawTokenMeta.decimals)}`
+                    : "TEE available: none tracked yet",
                   withdrawBalance && withdrawTokenMeta
-                    ? `Locked in TEE: ${formatTokenAmount(withdrawBalance.locked, withdrawTokenMeta.decimals)}`
-                    : "Locked in TEE: 0",
+                    ? `TEE locked: ${formatTokenAmount(withdrawBalance.locked, withdrawTokenMeta.decimals)}`
+                    : "TEE locked: 0",
                   withdrawAmount && withdrawTokenMeta
                     ? `Raw amount: ${parseAmountLabel(withdrawAmount, withdrawTokenMeta.decimals)}`
                     : "Raw amount: —",
-                  `Next withdraw nonce: ${snapshot?.account.withdrawNonce ?? "0"} -> ${
-                    snapshot
-                      ? String(BigInt(snapshot.account.withdrawNonce) + BigInt(1))
-                      : "—"
-                  }`,
+                  `Intent nonce: ${snapshot?.account.withdrawNonce ?? "0"} → ${nextWithdrawNonce ?? "—"}`,
+                  "Settlement path: wallet signs, TEE verifies, TEE sends finalizeWithdraw().",
                 ]}
               />
-
               <button
                 onClick={() => void handleWithdraw()}
-                disabled={
-                  actionsDisabled ||
-                  !withdrawTokenMeta ||
-                  !withdrawAmount ||
-                  !recipient.trim() ||
-                  withdrawState.kind === "pending"
-                }
-                className="rounded-xl px-4 py-3 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={withdrawActionsDisabled || !withdrawTokenMeta || !withdrawAmount || !recipient.trim() || withdrawState.kind === "pending"}
                 style={{
-                  background: "linear-gradient(135deg, rgba(239,68,68,0.2), rgba(239,68,68,0.12))",
-                  border: "1px solid rgba(239,68,68,0.22)",
-                  color: "#fee2e2",
+                  padding: "11px",
+                  borderRadius: "3px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  cursor: "pointer",
+                  opacity: withdrawActionsDisabled || !withdrawTokenMeta || !withdrawAmount || !recipient.trim() || withdrawState.kind === "pending" ? 0.4 : 1,
+                  background: "var(--sell-dim)",
+                  border: "1px solid var(--sell-border)",
+                  color: "var(--sell)",
+                  fontFamily: "var(--font-space-grotesk)",
+                  transition: "opacity 0.15s",
                 }}
               >
-                Request & finalize
+                Sign & submit intent
               </button>
-
               <ActionBanner state={withdrawState} />
             </div>
           </Card>
         </div>
       )}
 
+      {/* Mint Test Tokens */}
       {!loading && (
-        <div className="mt-6">
+        <div style={{ marginTop: "20px" }}>
           <Card>
             <CardHeader>
               <CardTitle>Mint Test Tokens</CardTitle>
+              <span style={{ fontSize: "11px", color: "var(--fg-subtle)" }}>owner only</span>
             </CardHeader>
-
-            <p className="text-sm leading-6" style={{ color: "rgba(255,255,255,0.55)" }}>
-              Mint tokens directly to your connected wallet. Only works if your wallet is the owner of the token contract.
+            <p style={{ fontSize: "12px", color: "var(--fg-muted)", marginBottom: "16px", lineHeight: 1.5 }}>
+              Mint tokens directly to your connected wallet. Only works if your wallet is the token contract owner.
             </p>
-
-            <div className="mt-5 flex flex-col gap-4">
-              <TokenSelector
-                label="Token"
-                tokens={snapshot?.markets.tokens ?? []}
-                value={mintToken}
-                onChange={setMintToken}
-              />
-
+            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <TokenSelector label="Token" tokens={snapshot?.markets.tokens ?? []} value={mintToken} onChange={setMintToken} />
               <Field label="Amount">
-                <input
-                  value={mintAmount}
-                  onChange={(event) => setMintAmount(event.target.value)}
-                  placeholder="1000"
-                  className="w-full rounded-xl px-4 py-3 text-sm text-white outline-none"
-                  style={inputStyle}
-                />
+                <input value={mintAmount} onChange={(e) => setMintAmount(e.target.value)} placeholder="1000" style={inputStyle} />
               </Field>
-
               <button
                 onClick={() => void handleMint()}
-                disabled={actionsDisabled || !mintToken || !mintAmount || mintState.kind === "pending"}
-                className="rounded-xl px-4 py-3 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={mintActionsDisabled || !mintToken || !mintAmount || mintState.kind === "pending"}
                 style={{
-                  background: "linear-gradient(135deg, rgba(139,92,246,0.24), rgba(139,92,246,0.14))",
-                  border: "1px solid rgba(139,92,246,0.28)",
-                  color: "#e9d5ff",
+                  padding: "11px",
+                  borderRadius: "3px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  cursor: "pointer",
+                  opacity: mintActionsDisabled || !mintToken || !mintAmount || mintState.kind === "pending" ? 0.4 : 1,
+                  background: "oklch(55% 0.10 290 / 0.14)",
+                  border: "1px solid oklch(55% 0.10 290 / 0.28)",
+                  color: "oklch(75% 0.10 290)",
+                  fontFamily: "var(--font-space-grotesk)",
+                  transition: "opacity 0.15s",
+                  maxWidth: "280px",
                 }}
               >
                 Mint to my wallet
               </button>
-
               <ActionBanner state={mintState} />
             </div>
           </Card>
@@ -804,303 +899,3 @@ function TransferView({ address }: { address: string }) {
 export default function TransferPage() {
   return <AddressGuard>{(address) => <TransferView address={address} />}</AddressGuard>;
 }
-
-function TokenSelector({
-  label,
-  tokens,
-  value,
-  onChange,
-}: {
-  label: string;
-  tokens: Token[];
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <Field label={label}>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl px-4 py-3 text-sm text-white outline-none"
-        style={inputStyle}
-      >
-        <option value="">Select token</option>
-        {tokens.map((token) => (
-          <option key={token.address} value={token.address}>
-            {token.symbol} · {token.role} · {shortAddress(token.address)}
-          </option>
-        ))}
-      </select>
-    </Field>
-  );
-}
-
-function FlowPillGroup({
-  items,
-  tint,
-  border,
-  color,
-}: {
-  items: string[];
-  tint: string;
-  border: string;
-  color: string;
-}) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {items.map((item) => (
-        <span
-          key={item}
-          className="rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em]"
-          style={{ background: tint, border: `1px solid ${border}`, color }}
-        >
-          {item}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function PreviewBox({ title, lines }: { title: string; lines: string[] }) {
-  return (
-    <div
-      className="rounded-2xl px-4 py-4"
-      style={{
-        background: "rgba(255,255,255,0.025)",
-        border: "1px solid rgba(255,255,255,0.06)",
-      }}
-    >
-      <p className="text-xs font-semibold uppercase tracking-[0.14em]" style={{ color: "var(--muted)" }}>
-        {title}
-      </p>
-      <div className="mt-3 flex flex-col gap-1.5">
-        {lines.map((line) => (
-          <p key={line} className="text-sm" style={{ color: "rgba(255,255,255,0.72)" }}>
-            {line}
-          </p>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function BalanceSnapshot({ rows }: { rows: BalanceRow[] }) {
-  if (!rows.length) {
-    return (
-      <p className="text-sm" style={{ color: "var(--muted)" }}>
-        No TEE balances yet. Successful deposits will appear here and feed the withdraw panel below.
-      </p>
-    );
-  }
-
-  return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      {rows.map(({ token, balance }) => (
-        <div
-          key={token.address}
-          className="rounded-2xl px-4 py-4"
-          style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.06)",
-          }}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold text-white">{token.symbol}</p>
-              <p className="mt-1 text-xs uppercase tracking-[0.14em]" style={{ color: "var(--muted)" }}>
-                {token.role}
-              </p>
-            </div>
-            <span
-              className="rounded-full px-2 py-1 text-[11px] font-semibold"
-              style={{
-                background: "rgba(255,255,255,0.05)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                color: "rgba(255,255,255,0.74)",
-              }}
-            >
-              {token.decimals} dp
-            </span>
-          </div>
-          <div className="mt-4 flex flex-col gap-2">
-            <Metric
-              label="Available"
-              value={formatTokenAmount(balance.available, token.decimals)}
-            />
-            <Metric
-              label="Locked"
-              value={formatTokenAmount(balance.locked, token.decimals)}
-            />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="flex flex-col gap-2">
-      <span className="text-xs font-semibold uppercase tracking-[0.14em]" style={{ color: "var(--muted)" }}>
-        {label}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="mt-2 flex items-center justify-between gap-4 text-sm">
-      <span style={{ color: "var(--muted)" }}>{label}</span>
-      <span className="font-mono text-white">{value}</span>
-    </div>
-  );
-}
-
-function ActionBanner({ state }: { state: ActionState }) {
-  if (state.kind === "idle") return null;
-
-  const palette =
-    state.kind === "success"
-      ? {
-          background: "rgba(34,197,94,0.08)",
-          border: "rgba(34,197,94,0.18)",
-          color: "#86efac",
-        }
-      : state.kind === "error"
-        ? {
-            background: "rgba(239,68,68,0.08)",
-            border: "rgba(239,68,68,0.2)",
-            color: "#fca5a5",
-          }
-        : {
-            background: "rgba(245,158,11,0.08)",
-            border: "rgba(245,158,11,0.2)",
-            color: "#fcd34d",
-          };
-
-  return (
-    <div
-      className="rounded-2xl px-4 py-4 text-sm"
-      style={{
-        background: palette.background,
-        border: `1px solid ${palette.border}`,
-        color: palette.color,
-      }}
-    >
-      <div className="flex flex-col gap-2">
-        {state.stage && <p className="font-semibold text-white">{state.stage}</p>}
-        {state.message && <p>{state.message}</p>}
-        {state.txHashes?.length ? (
-          <div className="flex flex-wrap gap-2 text-xs font-mono">
-            {state.txHashes.map((hash) => (
-              <span
-                key={hash}
-                className="rounded-full px-2 py-1"
-                style={{
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "rgba(255,255,255,0.8)",
-                }}
-              >
-                tx {shortAddress(hash, 8, 6)}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {state.instructionId ? (
-          <p className="text-xs font-mono" style={{ color: "rgba(255,255,255,0.72)" }}>
-            instruction {state.instructionId}
-          </p>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ErrorBanner({ message }: { message: string }) {
-  return (
-    <div
-      className="mb-6 rounded-xl px-4 py-3 text-sm"
-      style={{
-        background: "rgba(239,68,68,0.08)",
-        border: "1px solid rgba(239,68,68,0.2)",
-        color: "#f87171",
-      }}
-    >
-      {message}
-    </div>
-  );
-}
-
-function SkeletonGrid() {
-  return (
-    <div className="grid gap-6 xl:grid-cols-2">
-      {[1, 2].map((index) => (
-        <div
-          key={index}
-          className="h-[34rem] animate-pulse rounded-2xl"
-          style={{ background: "var(--card)", border: "1px solid var(--card-border)" }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function findToken(tokens: Token[] | undefined, address: string | undefined) {
-  if (!tokens || !address) return undefined;
-  return tokens.find((token) => token.address.toLowerCase() === address.toLowerCase());
-}
-
-function findBalance(
-  balances: Record<string, Balance> | undefined,
-  tokenAddress: string | undefined,
-) {
-  if (!balances || !tokenAddress) return undefined;
-
-  const entry = Object.entries(balances).find(
-    ([address]) => address.toLowerCase() === tokenAddress.toLowerCase(),
-  );
-
-  return entry?.[1];
-}
-
-function getBalanceRows(
-  balances: Record<string, Balance> | undefined,
-  tokens: Token[] | undefined,
-): BalanceRow[] {
-  if (!balances || !tokens) return [];
-
-  return tokens.flatMap((token) => {
-    const balance = findBalance(balances, token.address);
-    return balance ? [{ token, balance }] : [];
-  });
-}
-
-function parseAmountLabel(value: string, decimals: number) {
-  try {
-    return parseAmountInput(value, decimals).toString();
-  } catch {
-    return "invalid";
-  }
-}
-
-function assertSuccessfulReceipt(
-  receipt: { status: "success" | "reverted"; transactionHash: Hex },
-  action: string,
-) {
-  if (receipt.status === "success") return;
-  throw new Error(`${action} transaction reverted: ${receipt.transactionHash}`);
-}
-
-const inputStyle = {
-  background: "rgba(255,255,255,0.03)",
-  border: "1px solid rgba(255,255,255,0.08)",
-} as const;

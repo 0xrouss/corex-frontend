@@ -1,23 +1,25 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Space_Grotesk, Outfit } from "next/font/google";
 import { headers } from "next/headers";
 import ContextProvider from "@/context/context-provider";
 import { Navbar } from "@/components/navbar";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const spaceGrotesk = Space_Grotesk({
+  variable: "--font-space-grotesk",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const outfit = Outfit({
+  variable: "--font-outfit",
   subsets: ["latin"],
+  weight: ["300", "400", "500", "600"],
 });
 
 export const metadata: Metadata = {
-  title: "Corex",
-  description: "Corex TEE DEX — live session explorer",
+  title: "Corex — Dark Pool",
+  description: "Corex TEE-secured dark pool orderbook on Flare",
 };
 
 export default async function RootLayout({
@@ -31,12 +33,12 @@ export default async function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${spaceGrotesk.variable} ${outfit.variable} h-full`}
     >
       <body className="min-h-full flex flex-col">
         <ContextProvider cookies={cookies}>
           <Navbar />
-          <main className="pt-14">{children}</main>
+          <main className="pt-12">{children}</main>
         </ContextProvider>
       </body>
     </html>

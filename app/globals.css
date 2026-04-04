@@ -1,24 +1,91 @@
 @import "tailwindcss";
 
 :root {
-  --background: #06060a;
-  --foreground: #f0f0f2;
-  --card: rgba(255, 255, 255, 0.04);
-  --card-border: rgba(255, 255, 255, 0.07);
-  --accent: #f59e0b;
-  --muted: rgba(255, 255, 255, 0.4);
+  /* Backgrounds — warm charcoal, not blue-black */
+  --bg:          oklch(8.5%  0.008 65);
+  --bg-raised:   oklch(12%   0.009 65);
+  --bg-surface:  oklch(16%   0.011 65);
+
+  /* Text — warm ivory scale */
+  --fg:          oklch(90%   0.007 80);
+  --fg-muted:    oklch(52%   0.009 68);
+  --fg-subtle:   oklch(34%   0.006 65);
+
+  /* Accent — refined gold, not neon amber */
+  --accent:       oklch(72%  0.11  68);
+  --accent-dim:   oklch(72%  0.11  68 / 0.12);
+  --accent-border: oklch(72% 0.11  68 / 0.28);
+
+  /* Semantic — sage green + terracotta, not neon */
+  --buy:          oklch(68%  0.11  152);
+  --buy-dim:      oklch(68%  0.11  152 / 0.13);
+  --buy-border:   oklch(68%  0.11  152 / 0.28);
+
+  --sell:         oklch(61%  0.14  25);
+  --sell-dim:     oklch(61%  0.14  25 / 0.12);
+  --sell-border:  oklch(61%  0.14  25 / 0.26);
+
+  --error:        oklch(61%  0.14  25);
+  --error-dim:    oklch(61%  0.14  25 / 0.09);
+  --error-border: oklch(61%  0.14  25 / 0.24);
+
+  /* Borders */
+  --border:       oklch(20%  0.009 65);
+  --border-strong: oklch(28% 0.011 65);
+
+  /* Legacy aliases (keep for gradual migration) */
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --card: var(--bg-raised);
+  --card-border: var(--border);
+  --muted: var(--fg-muted);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --font-sans: var(--font-outfit);
+  --font-display: var(--font-space-grotesk);
 }
 
+* { box-sizing: border-box; }
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-outfit), system-ui, sans-serif;
   min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Page entry animation */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+main > * { animation: fade-up 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Thin warm scrollbar */
+::-webkit-scrollbar            { width: 4px; height: 4px; }
+::-webkit-scrollbar-track      { background: transparent; }
+::-webkit-scrollbar-thumb      { background: var(--fg-subtle); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+
+/* Select — hide default arrow, add custom */
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2370675a'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  cursor: pointer;
+}
+
+select option { background: oklch(16% 0.011 65); }
+
+/* Input focus ring */
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 1px solid var(--accent-border);
+  outline-offset: 0;
 }

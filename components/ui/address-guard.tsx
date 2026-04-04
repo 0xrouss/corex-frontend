@@ -8,16 +8,41 @@ export function AddressGuard({ children }: { children: (address: string) => Reac
 
   if (!address) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 py-32 text-center">
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "12px",
+          paddingTop: "120px",
+          paddingBottom: "120px",
+        }}
+      >
         <div
-          className="flex h-16 w-16 items-center justify-center rounded-2xl text-3xl"
-          style={{ background: "var(--card)", border: "1px solid var(--card-border)" }}
+          style={{
+            width: "32px",
+            height: "1px",
+            background: "var(--border-strong)",
+          }}
+        />
+        <p
+          style={{
+            fontSize: "13px",
+            fontWeight: 500,
+            color: "var(--fg-muted)",
+            letterSpacing: "0.02em",
+          }}
         >
-          🔌
-        </div>
-        <p className="text-base font-medium" style={{ color: "var(--muted)" }}>
-          Connect your wallet to continue
+          Connect wallet to continue
         </p>
+        <div
+          style={{
+            width: "32px",
+            height: "1px",
+            background: "var(--border-strong)",
+          }}
+        />
       </div>
     );
   }

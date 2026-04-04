@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { fetchActivity } from "@/lib/api";
+import { fetchActivity, fetchMarkets } from "@/lib/api";
+import { formatTokenAmount } from "@/lib/corex";
 
 interface Deposit {
   depositId: string;
@@ -31,25 +32,64 @@ interface ActivityData {
   withdrawals: Withdrawal[];
 }
 
+interface TokenMeta {
+  symbol: string;
+  decimals: number;
+}
+
 function ActivityView({ address }: { address: string }) {
   const [data, setData] = useState<ActivityData | null>(null);
+  const [tokenMap, setTokenMap] = useState<Record<string, TokenMeta>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetchActivity(address)
-      .then(setData)
+    Promise.all([fetchActivity(address), fetchMarkets()])
+      .then(([activityData, marketsData]) => {
+        setData(activityData);
+        const map: Record<string, TokenMeta> = {};
+        for (const t of marketsData.tokens ?? []) {
+          map[t.address.toLowerCase()] = { symbol: t.symbol, decimals: t.decimals };
+        }
+        setTokenMap(map);
+      })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, [address]);
 
+  function formatAmount(raw: string, tokenAddress: string): string {
+    const meta = tokenMap[tokenAddress.toLowerCase()];
+    if (!meta) return raw;
+    try {
+      return formatTokenAmount(raw, meta.decimals);
+    } catch {
+      return raw;
+    }
+  }
+
+  function tokenLabel(tokenAddress: string): string {
+    const meta = tokenMap[tokenAddress.toLowerCase()];
+    return meta ? meta.symbol : `${tokenAddress.slice(0, 10)}…${tokenAddress.slice(-4)}`;
+  }
+
   return (
-    <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Activity</h1>
-        <p className="mt-1 text-sm font-mono" style={{ color: "var(--muted)" }}>
+    <div className="mx-auto px-5 py-10 sm:px-7" style={{ maxWidth: "760px" }}>
+      <div style={{ marginBottom: "32px" }}>
+        <h1
+          style={{
+            fontFamily: "var(--font-space-grotesk)",
+            fontSize: "22px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--fg)",
+            margin: 0,
+          }}
+        >
+          Activity
+        </h1>
+        <p style={{ marginTop: "4px", fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
           {address}
         </p>
       </div>
@@ -58,49 +98,57 @@ function ActivityView({ address }: { address: string }) {
       {error && <ErrorBanner message={error} />}
 
       {data && (
-        <div className="flex flex-col gap-6">
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           {/* Deposits */}
           <Card>
             <CardHeader>
               <CardTitle>Deposits</CardTitle>
-              <span className="text-xs tabular-nums" style={{ color: "var(--muted)" }}>
+              <span style={{ fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
                 {data.deposits.length}
               </span>
             </CardHeader>
+
             {data.deposits.length === 0 ? (
-              <p className="text-sm py-4 text-center" style={{ color: "var(--muted)" }}>
-                No deposits.
-              </p>
+              <p style={{ fontSize: "12px", color: "var(--fg-subtle)", padding: "8px 0" }}>No deposits.</p>
             ) : (
-              <div className="flex flex-col gap-2">
-                {data.deposits.map((d) => (
+              <div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "80px 1fr 60px",
+                    gap: "0 12px",
+                    padding: "0 0 8px",
+                    borderBottom: "1px solid var(--border)",
+                  }}
+                >
+                  {["Token", "Amount", "Seq"].map((h) => (
+                    <span key={h} style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--fg-subtle)", fontFamily: "var(--font-space-grotesk)" }}>
+                      {h}
+                    </span>
+                  ))}
+                </div>
+
+                {data.deposits.map((d, i) => (
                   <div
                     key={d.depositId}
-                    className="flex items-center justify-between rounded-xl px-4 py-3"
                     style={{
-                      background: "rgba(34,197,94,0.04)",
-                      border: "1px solid rgba(34,197,94,0.1)",
+                      display: "grid",
+                      gridTemplateColumns: "80px 1fr 60px",
+                      gap: "0 12px",
+                      padding: "10px 0",
+                      borderBottom: i < data.deposits.length - 1 ? "1px solid var(--border)" : "none",
+                      alignItems: "center",
                     }}
                   >
-                    <div className="flex items-center gap-3">
-                      <span
-                        className="text-xs font-semibold px-2 py-0.5 rounded-md"
-                        style={{ background: "rgba(34,197,94,0.12)", color: "#4ade80" }}
-                      >
-                        DEPOSIT
-                      </span>
-                      <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
-                        {d.token.slice(0, 10)}…{d.token.slice(-4)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-semibold tabular-nums text-white">
-                        +{d.amount}
-                      </span>
-                      <span className="text-xs" style={{ color: "var(--muted)" }}>
-                        seq {d.seq}
-                      </span>
-                    </div>
+                    <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--fg-muted)", letterSpacing: "0.04em" }}>
+                      {tokenLabel(d.token)}
+                    </span>
+                    <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--buy)", fontVariantNumeric: "tabular-nums" }}>
+                      +{formatAmount(d.amount, d.token)}
+                    </span>
+                    <span style={{ fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
+                      {d.seq}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -111,49 +159,55 @@ function ActivityView({ address }: { address: string }) {
           <Card>
             <CardHeader>
               <CardTitle>Withdrawals</CardTitle>
-              <span className="text-xs tabular-nums" style={{ color: "var(--muted)" }}>
+              <span style={{ fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
                 {data.withdrawals.length}
               </span>
             </CardHeader>
+
             {data.withdrawals.length === 0 ? (
-              <p className="text-sm py-4 text-center" style={{ color: "var(--muted)" }}>
-                No withdrawals.
-              </p>
+              <p style={{ fontSize: "12px", color: "var(--fg-subtle)", padding: "8px 0" }}>No withdrawals.</p>
             ) : (
-              <div className="flex flex-col gap-2">
-                {data.withdrawals.map((w) => (
+              <div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "80px 1fr 1fr 60px",
+                    gap: "0 12px",
+                    padding: "0 0 8px",
+                    borderBottom: "1px solid var(--border)",
+                  }}
+                >
+                  {["Token", "Amount", "Recipient", "Nonce"].map((h) => (
+                    <span key={h} style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--fg-subtle)", fontFamily: "var(--font-space-grotesk)" }}>
+                      {h}
+                    </span>
+                  ))}
+                </div>
+
+                {data.withdrawals.map((w, i) => (
                   <div
                     key={`${w.withdrawNonce}-${w.seq}`}
-                    className="rounded-xl px-4 py-3"
                     style={{
-                      background: "rgba(239,68,68,0.04)",
-                      border: "1px solid rgba(239,68,68,0.1)",
+                      display: "grid",
+                      gridTemplateColumns: "80px 1fr 1fr 60px",
+                      gap: "0 12px",
+                      padding: "10px 0",
+                      borderBottom: i < data.withdrawals.length - 1 ? "1px solid var(--border)" : "none",
+                      alignItems: "center",
                     }}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span
-                          className="text-xs font-semibold px-2 py-0.5 rounded-md"
-                          style={{ background: "rgba(239,68,68,0.1)", color: "#f87171" }}
-                        >
-                          WITHDRAW
-                        </span>
-                        <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
-                          {w.token.slice(0, 10)}…{w.token.slice(-4)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-semibold tabular-nums text-white">
-                          -{w.amount}
-                        </span>
-                        <span className="text-xs" style={{ color: "var(--muted)" }}>
-                          nonce {w.withdrawNonce}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="mt-2 text-xs font-mono" style={{ color: "var(--muted)" }}>
-                      → {w.recipient.slice(0, 12)}…{w.recipient.slice(-6)}
-                    </div>
+                    <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--fg-muted)", letterSpacing: "0.04em" }}>
+                      {tokenLabel(w.token)}
+                    </span>
+                    <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--sell)", fontVariantNumeric: "tabular-nums" }}>
+                      -{formatAmount(w.amount, w.token)}
+                    </span>
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {w.recipient.slice(0, 10)}…{w.recipient.slice(-6)}
+                    </span>
+                    <span style={{ fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
+                      {w.withdrawNonce}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -171,12 +225,17 @@ export default function ActivityPage() {
 
 function Skeleton() {
   return (
-    <div className="flex flex-col gap-4 animate-pulse">
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
       {[1, 2].map((i) => (
         <div
           key={i}
-          className="h-40 rounded-2xl"
-          style={{ background: "var(--card)", border: "1px solid var(--card-border)" }}
+          style={{
+            height: "140px",
+            borderRadius: "4px",
+            background: "var(--bg-raised)",
+            border: "1px solid var(--border)",
+            animation: "pulse 2s cubic-bezier(0.4,0,0.6,1) infinite",
+          }}
         />
       ))}
     </div>
@@ -186,11 +245,13 @@ function Skeleton() {
 function ErrorBanner({ message }: { message: string }) {
   return (
     <div
-      className="rounded-xl px-4 py-3 text-sm"
       style={{
-        background: "rgba(239,68,68,0.08)",
-        border: "1px solid rgba(239,68,68,0.2)",
-        color: "#f87171",
+        padding: "10px 14px",
+        borderRadius: "3px",
+        fontSize: "12px",
+        background: "var(--error-dim)",
+        border: "1px solid var(--error-border)",
+        color: "var(--error)",
       }}
     >
       {message}

@@ -84,3 +84,46 @@
 - Verification:
   - `npx eslint app/transfer/page.tsx lib/corex.ts`
   - `npx tsc --noEmit`
+
+---
+
+# Task: Switch withdraw flow to offchain EIP-712 POST API
+
+## Plan
+
+- [x] Confirm the exact `POST /withdraw-intent` request/response contract and EIP-712 domain/type from `fce-weather-api`.
+- [x] Add frontend helpers and a same-origin Next route for submitting signed withdraw intents.
+- [x] Replace `/transfer` withdraw from `requestWithdraw() -> proxy poll -> finalizeWithdraw()` to `sign typed data -> POST /withdraw-intent`.
+- [x] Update the withdraw copy, previews, and success state so the UI reflects TEE-submitted finalization.
+- [x] Verify with targeted lint and typecheck, then record results and any limits.
+
+## Review
+
+- Added a same-origin `POST /api/corex/withdraw-intent` route that forwards the signed payload to the TEE runtime using the configured Corex API base URL.
+- Added shared frontend EIP-712 helpers for the `WithdrawIntent` domain and response typing so the page signs the exact backend contract instead of reconstructing it inline.
+- Updated `/transfer` withdraw to:
+  - sign the intent in-wallet with nonce `account.withdrawNonce + 1`
+  - submit the signed payload over REST
+  - treat the returned `finalizeTxHash` as the settlement artifact
+  - refresh account/activity after the TEE completes on-chain finalization
+- Deposit remains on the existing `approve -> depositAndSync -> proxy poll` path.
+- Verification:
+  - `npx eslint app/transfer/page.tsx app/api/corex/withdraw-intent/route.ts lib/api.ts lib/corex.ts lib/server/corex-config.ts`
+  - `npx tsc --noEmit`
+
+---
+
+# Task: Rename displayed Corex tokens to FXRP / USDT0
+
+## Plan
+
+- [x] Confirm whether the frontend gets token labels dynamically from the TEE or still carries any hardcoded mock labels in docs/fixtures.
+- [x] Update frontend-facing docs or fixtures that still show the old mock token names and symbols.
+- [x] Verify there are no stale `CBASE` / `CQUOTE` references left in the frontend surfaces that matter to users.
+
+## Review
+
+- Confirmed the frontend UI is already data-driven from the TEE `/markets` response, so the live rename lands through the TEE metadata without needing React component changes.
+- Updated the frontend REST API documentation example to show `FXRP` and `USDT0` instead of the old mock token labels.
+- Verification:
+  - `rg -n "Corex Base Test Token|Corex Quote Test Token|CBASE|CQUOTE|\"Base\", \"BASE\"|\"Quote\", \"QUOTE\"" fce-weather-api frontend -g '!**/node_modules/**' -g '!**/.next/**' -g '!**/tasks/**'`

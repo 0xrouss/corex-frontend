@@ -15,6 +15,25 @@ export async function fetchProxyResult(instructionId: string) {
   return data;
 }
 
+export async function submitWithdrawIntent(payload: {
+  user: string;
+  token: string;
+  amount: string;
+  recipient: string;
+  nonce: string;
+  deadline: string;
+  signature: string;
+}) {
+  const res = await fetch("/api/corex/withdraw-intent", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to submit withdraw intent");
+  return data;
+}
+
 export async function fetchAccount(account: string) {
   const res = await fetch(`${API_BASE}/account?account=${encodeURIComponent(account)}`);
   const data = await res.json();

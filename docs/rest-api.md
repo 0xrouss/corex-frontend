@@ -268,15 +268,15 @@ Response:
   "tokens": [
     {
       "address": "0xb2b08fadf30c557425a110af97d5ba6cc91800c9",
-      "name": "Corex Base Test Token",
-      "symbol": "CBASE",
+      "name": "FXRP",
+      "symbol": "FXRP",
       "decimals": 18,
       "role": "BASE"
     },
     {
       "address": "0xaf58512c92ca0c6c1a20f22c6ce43e71fb71183f",
-      "name": "Corex Quote Test Token",
-      "symbol": "CQUOTE",
+      "name": "USDT0",
+      "symbol": "USDT0",
       "decimals": 6,
       "role": "QUOTE"
     }

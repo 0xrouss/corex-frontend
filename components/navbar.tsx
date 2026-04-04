@@ -6,13 +6,13 @@ import { useAccount } from "wagmi";
 import { ConnectWalletButton } from "@/components/connect-wallet-button";
 
 const NAV_LINKS = [
-  { href: "/account", label: "Account" },
+  { href: "/markets",  label: "Markets"  },
+  { href: "/trade",    label: "Trade"    },
+  { href: "/orders",   label: "Orders"   },
+  { href: "/account",  label: "Account"  },
   { href: "/transfer", label: "Transfer" },
-  { href: "/trade", label: "Trade" },
-  { href: "/orders", label: "Orders" },
-  { href: "/markets", label: "Markets" },
   { href: "/activity", label: "Activity" },
-  { href: "/state", label: "State" },
+  { href: "/state",    label: "State"    },
 ];
 
 export function Navbar() {
@@ -23,32 +23,46 @@ export function Navbar() {
     <header
       className="fixed top-0 inset-x-0 z-50"
       style={{
-        backdropFilter: "blur(24px) saturate(200%)",
-        WebkitBackdropFilter: "blur(24px) saturate(200%)",
-        backgroundColor: "rgba(6, 6, 10, 0.72)",
-        borderBottom: "1px solid rgba(255, 255, 255, 0.06)",
+        background: "oklch(6.5% 0.007 65)",
+        borderBottom: "1px solid var(--border)",
+        height: "48px",
       }}
     >
-      <nav className="mx-auto flex h-14 max-w-7xl items-center gap-6 px-4 sm:px-6">
+      <nav
+        className="mx-auto flex h-full items-center gap-0 px-5 sm:px-7"
+        style={{ maxWidth: "1400px" }}
+      >
         {/* Brand */}
-        <Link href="/" className="flex items-center gap-2 shrink-0">
+        <Link href="/" className="flex items-center gap-2.5 shrink-0 mr-7">
           <span
-            className="text-lg font-semibold tracking-tight text-white"
-            style={{ letterSpacing: "-0.02em" }}
+            style={{
+              fontFamily: "var(--font-space-grotesk)",
+              fontWeight: 700,
+              fontSize: "15px",
+              letterSpacing: "-0.01em",
+              color: "var(--fg)",
+            }}
           >
-            Corex
+            COREX
           </span>
           <span
-            className="text-xs font-medium px-1.5 py-0.5 rounded"
             style={{
-              background: "rgba(245, 158, 11, 0.15)",
-              color: "#f59e0b",
-              border: "1px solid rgba(245, 158, 11, 0.25)",
+              fontSize: "10px",
+              fontWeight: 600,
+              letterSpacing: "0.12em",
+              color: "var(--accent)",
+              textTransform: "uppercase",
             }}
           >
             TEE
           </span>
         </Link>
+
+        {/* Vertical rule */}
+        <div
+          className="mr-7 shrink-0"
+          style={{ width: "1px", height: "16px", background: "var(--border-strong)" }}
+        />
 
         {/* Nav links */}
         <div className="flex items-center gap-1">
@@ -58,22 +72,17 @@ export function Navbar() {
               <Link
                 key={href}
                 href={href}
-                className="relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-200"
+                className="px-3 py-1 text-xs font-medium transition-colors duration-150"
                 style={{
-                  color: active ? "#ffffff" : "rgba(255,255,255,0.5)",
-                  background: active ? "rgba(255,255,255,0.08)" : "transparent",
+                  color: active ? "var(--fg)" : "var(--fg-muted)",
+                  borderBottom: active
+                    ? "1px solid var(--accent)"
+                    : "1px solid transparent",
+                  paddingBottom: active ? "calc(0.25rem - 1px)" : "0.25rem",
+                  letterSpacing: "0.01em",
                 }}
               >
                 {label}
-                {active && (
-                  <span
-                    className="absolute inset-x-3 -bottom-px h-px"
-                    style={{
-                      background:
-                        "linear-gradient(90deg, transparent, #f59e0b, transparent)",
-                    }}
-                  />
-                )}
               </Link>
             );
           })}
@@ -82,25 +91,26 @@ export function Navbar() {
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* Address pill */}
+        {/* Address */}
         {address && (
           <span
-            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 text-xs font-mono rounded-full"
-            style={{
-              background: "rgba(255,255,255,0.05)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              color: "rgba(255,255,255,0.45)",
-            }}
+            className="hidden sm:flex items-center gap-1.5 mr-4"
+            style={{ fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}
           >
             <span
-              className="inline-block h-1.5 w-1.5 rounded-full"
-              style={{ background: "#22c55e" }}
+              style={{
+                display: "inline-block",
+                width: "5px",
+                height: "5px",
+                borderRadius: "50%",
+                background: "var(--buy)",
+                flexShrink: 0,
+              }}
             />
             {address.slice(0, 6)}…{address.slice(-4)}
           </span>
         )}
 
-        {/* Connect button */}
         <ConnectWalletButton />
       </nav>
     </header>

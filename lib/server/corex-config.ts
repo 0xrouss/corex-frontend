@@ -20,6 +20,7 @@ interface DeploymentFileShape {
 }
 
 const DEFAULT_PROXY_URL = "http://127.0.0.1:6676";
+const DEFAULT_API_URL = "http://127.0.0.1:6680";
 const DEFAULT_FEE_WEI = "1000000000000";
 
 export async function loadCorexFrontendConfig(): Promise<CorexFrontendConfig> {
@@ -74,6 +75,14 @@ export function resolveCorexProxyUrl(): string {
     process.env.COREX_PROXY_URL,
     process.env.NEXT_PUBLIC_COREX_PROXY_URL,
     DEFAULT_PROXY_URL,
+  )!;
+}
+
+export function resolveCorexApiUrl(): string {
+  return pickString(
+    process.env.COREX_API_URL,
+    process.env.NEXT_PUBLIC_API_URL,
+    DEFAULT_API_URL,
   )!;
 }
 
