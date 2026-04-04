@@ -861,9 +861,7 @@ function TradeView({ address }: { address: string }) {
                             : order.price}
                         </span>
                         <span style={{ marginLeft: "6px", fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
-                          {selectedMarket ? safeFormatAmount(order.remainingQty, selectedMarket.baseDecimals) : order.remainingQty}
-                          {" / "}
-                          {selectedMarket ? safeFormatAmount(order.initialQty, selectedMarket.baseDecimals) : order.initialQty}
+                          {order.remainingQty}{" / "}{order.initialQty}
                         </span>
                       </div>
 

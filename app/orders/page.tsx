@@ -55,12 +55,14 @@ function OrdersView({ address }: { address: string }) {
 
         const map: Record<string, MarketMeta> = {};
         for (const m of d.markets ?? []) {
-          map[m.marketId] = {
+          const meta: MarketMeta = {
             baseDecimals: m.baseDecimals,
             quoteDecimals: m.quoteDecimals,
             baseSymbol: tokens[m.baseToken.toLowerCase()]?.symbol ?? "BASE",
             quoteSymbol: tokens[m.quoteToken.toLowerCase()]?.symbol ?? "QUOTE",
           };
+          map[m.marketId] = meta;
+          if (m.marketIdBytes32) map[m.marketIdBytes32.toLowerCase()] = meta;
         }
         setMarketMap(map);
       })
@@ -171,7 +173,7 @@ function OrdersView({ address }: { address: string }) {
               </div>
 
               {orders.map((o, i) => {
-                const meta = marketMap[o.marketId];
+                const meta = marketMap[o.marketId] ?? marketMap[o.marketId.toLowerCase()];
                 return (
                   <div
                     key={o.orderId}
@@ -208,11 +210,9 @@ function OrdersView({ address }: { address: string }) {
 
                     {/* Qty */}
                     <span style={{ fontSize: "12px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
-                      <span style={{ color: "var(--fg)" }}>
-                        {meta ? safeFormat(o.remainingQty, meta.baseDecimals) : o.remainingQty}
-                      </span>
+                      <span style={{ color: "var(--fg)" }}>{o.remainingQty}</span>
                       <span style={{ margin: "0 3px", color: "var(--fg-subtle)" }}>/</span>
-                      {meta ? safeFormat(o.initialQty, meta.baseDecimals) : o.initialQty}
+                      {o.initialQty}
                       {meta && (
                         <span style={{ marginLeft: "4px", fontSize: "10px", color: "var(--fg-subtle)" }}>
                           {meta.baseSymbol}

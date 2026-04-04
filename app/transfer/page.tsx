@@ -147,7 +147,22 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ActionBanner({ state }: { state: ActionState }) {
+const BLOCK_EXPLORERS: Record<number, string> = {
+  114:     "https://coston2-explorer.flare.network",  // Flare Testnet Coston2
+  14:      "https://flare-explorer.flare.network",    // Flare Mainnet
+  1:       "https://etherscan.io",
+  11155111:"https://sepolia.etherscan.io",
+  8453:    "https://basescan.org",
+  84532:   "https://sepolia.basescan.org",
+};
+
+function getTxUrl(chainId: number | undefined, hash: string): string | null {
+  if (!chainId) return null;
+  const base = BLOCK_EXPLORERS[chainId];
+  return base ? `${base}/tx/${hash}` : null;
+}
+
+function ActionBanner({ state, chainId }: { state: ActionState; chainId?: number }) {
   if (state.kind === "idle") return null;
 
   const palette =
@@ -176,22 +191,27 @@ function ActionBanner({ state }: { state: ActionState }) {
       {state.message && <p>{state.message}</p>}
       {state.txHashes?.length ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "6px" }}>
-          {state.txHashes.map((hash) => (
-            <span
-              key={hash}
-              style={{
-                fontSize: "10px",
-                padding: "2px 7px",
-                borderRadius: "2px",
-                background: "var(--bg-surface)",
-                border: "1px solid var(--border-strong)",
-                color: "var(--fg-muted)",
-                fontVariantNumeric: "tabular-nums",
-              }}
-            >
-              tx {shortAddress(hash, 8, 6)}
-            </span>
-          ))}
+          {state.txHashes.map((hash) => {
+            const url = getTxUrl(chainId, hash);
+            const label = `tx ${shortAddress(hash, 8, 6)}`;
+            const chipStyle: React.CSSProperties = {
+              fontSize: "10px",
+              padding: "2px 7px",
+              borderRadius: "2px",
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border-strong)",
+              color: "var(--fg-muted)",
+              fontVariantNumeric: "tabular-nums",
+              textDecoration: "none",
+            };
+            return url ? (
+              <a key={hash} href={url} target="_blank" rel="noopener noreferrer" style={chipStyle}>
+                {label} ↗
+              </a>
+            ) : (
+              <span key={hash} style={chipStyle}>{label}</span>
+            );
+          })}
         </div>
       ) : null}
       {state.instructionId ? (
@@ -790,7 +810,7 @@ function TransferView({ address }: { address: string }) {
               >
                 Approve, deposit, sync
               </button>
-              <ActionBanner state={depositState} />
+              <ActionBanner state={depositState} chainId={config?.chainId} />
             </div>
           </Card>
 
@@ -844,7 +864,7 @@ function TransferView({ address }: { address: string }) {
               >
                 Sign & submit intent
               </button>
-              <ActionBanner state={withdrawState} />
+              <ActionBanner state={withdrawState} chainId={config?.chainId} />
             </div>
           </Card>
         </div>
