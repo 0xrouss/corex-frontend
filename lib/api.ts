@@ -1,6 +1,20 @@
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:6680";
 
+export async function fetchCorexConfig() {
+  const res = await fetch("/api/corex/config");
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to fetch Corex config");
+  return data;
+}
+
+export async function fetchProxyResult(instructionId: string) {
+  const res = await fetch(`/api/corex/proxy-result/${instructionId}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to fetch proxy result");
+  return data;
+}
+
 export async function fetchAccount(account: string) {
   const res = await fetch(`${API_BASE}/account?account=${encodeURIComponent(account)}`);
   const data = await res.json();
