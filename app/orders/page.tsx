@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSignTypedData } from "wagmi";
 import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { fetchOrders, fetchMarkets } from "@/lib/api";
+import { ensureCorexReadAuth } from "@/lib/corex-read-auth";
 import { formatTokenAmount } from "@/lib/corex";
 
 const STATUSES = ["", "OPEN", "PARTIAL", "FILLED", "CANCELED"] as const;
@@ -40,6 +42,7 @@ function safeFormat(raw: string, decimals: number): string {
 }
 
 function OrdersView({ address }: { address: string }) {
+  const { signTypedDataAsync } = useSignTypedData();
   const [orders, setOrders] = useState<Order[]>([]);
   const [marketMap, setMarketMap] = useState<Record<string, MarketMeta>>({});
   const [status, setStatus] = useState<Status>("");
@@ -70,13 +73,33 @@ function OrdersView({ address }: { address: string }) {
   }, []);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetchOrders(address, status || undefined)
-      .then((d) => setOrders(d.orders ?? []))
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [address, status]);
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const auth = await ensureCorexReadAuth({ address: address as `0x${string}`, signTypedDataAsync });
+        const data = await fetchOrders(address, auth, status || undefined);
+        if (!cancelled) {
+          setOrders(data.orders ?? []);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to fetch orders");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, signTypedDataAsync, status]);
 
   return (
     <div className="mx-auto px-5 py-10 sm:px-7" style={{ maxWidth: "960px" }}>
@@ -210,9 +233,11 @@ function OrdersView({ address }: { address: string }) {
 
                     {/* Qty */}
                     <span style={{ fontSize: "12px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
-                      <span style={{ color: "var(--fg)" }}>{o.remainingQty}</span>
+                      <span style={{ color: "var(--fg)" }}>
+                        {meta ? safeFormat(o.remainingQty, meta.baseDecimals) : o.remainingQty}
+                      </span>
                       <span style={{ margin: "0 3px", color: "var(--fg-subtle)" }}>/</span>
-                      {o.initialQty}
+                      {meta ? safeFormat(o.initialQty, meta.baseDecimals) : o.initialQty}
                       {meta && (
                         <span style={{ marginLeft: "4px", fontSize: "10px", color: "var(--fg-subtle)" }}>
                           {meta.baseSymbol}

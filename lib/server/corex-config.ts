@@ -87,30 +87,42 @@ export function resolveCorexApiUrl(): string {
 }
 
 async function readDeploymentFile(): Promise<DeploymentFileShape | null> {
-  const file = resolveDeploymentFilePath();
-  try {
-    const raw = await readFile(file, "utf8");
-    return JSON.parse(raw) as DeploymentFileShape;
-  } catch {
-    return null;
+  for (const file of resolveDeploymentFilePaths()) {
+    try {
+      const raw = await readFile(file, "utf8");
+      return JSON.parse(raw) as DeploymentFileShape;
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
-function resolveDeploymentFilePath(): string {
+function resolveDeploymentFilePaths(): string[] {
   const configured = process.env.COREX_DEPLOYMENT_FILE;
   if (!configured) {
-    return path.resolve(
-      process.cwd(),
-      "..",
-      "fce-weather-api",
-      "config",
-      "coston2",
-      "corex-deployment.json",
-    );
+    return [
+      path.resolve(
+        process.cwd(),
+        "..",
+        "corex-tee",
+        "config",
+        "coston2",
+        "corex-deployment.json",
+      ),
+      path.resolve(
+        process.cwd(),
+        "..",
+        "fce-weather-api",
+        "config",
+        "coston2",
+        "corex-deployment.json",
+      ),
+    ];
   }
 
-  if (path.isAbsolute(configured)) return configured;
-  return path.resolve(process.cwd(), configured);
+  if (path.isAbsolute(configured)) return [configured];
+  return [path.resolve(process.cwd(), configured)];
 }
 
 function pickString(...values: Array<string | null | undefined>): string | undefined {

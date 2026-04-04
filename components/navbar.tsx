@@ -12,7 +12,6 @@ const NAV_LINKS = [
   { href: "/account",  label: "Account"  },
   { href: "/transfer", label: "Transfer" },
   { href: "/activity", label: "Activity" },
-  { href: "/state",    label: "State"    },
 ];
 
 export function Navbar() {

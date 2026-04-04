@@ -1,3 +1,8 @@
+import {
+  buildCorexReadAuthHeaders,
+  type CorexReadAuth,
+} from "@/lib/corex-read-auth";
+
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:6680";
 
@@ -34,18 +39,23 @@ export async function submitWithdrawIntent(payload: {
   return data;
 }
 
-export async function fetchAccount(account: string) {
-  const res = await fetch(`${API_BASE}/account?account=${encodeURIComponent(account)}`);
+export async function fetchAccount(account: string, auth: CorexReadAuth) {
+  const res = await fetch(`/api/corex/account?account=${encodeURIComponent(account)}`, {
+    headers: buildCorexReadAuthHeaders(auth),
+    cache: "no-store",
+  });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Failed to fetch account");
   return data;
 }
 
-export async function fetchOrders(account: string, status?: string) {
-  const url = new URL(`${API_BASE}/orders`);
-  url.searchParams.set("account", account);
-  if (status) url.searchParams.set("status", status);
-  const res = await fetch(url.toString());
+export async function fetchOrders(account: string, auth: CorexReadAuth, status?: string) {
+  const search = new URLSearchParams({ account });
+  if (status) search.set("status", status);
+  const res = await fetch(`/api/corex/orders?${search.toString()}`, {
+    headers: buildCorexReadAuthHeaders(auth),
+    cache: "no-store",
+  });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Failed to fetch orders");
   return data;
@@ -58,8 +68,11 @@ export async function fetchMarkets() {
   return data;
 }
 
-export async function fetchActivity(account: string) {
-  const res = await fetch(`${API_BASE}/activity?account=${encodeURIComponent(account)}`);
+export async function fetchActivity(account: string, auth: CorexReadAuth) {
+  const res = await fetch(`/api/corex/activity?account=${encodeURIComponent(account)}`, {
+    headers: buildCorexReadAuthHeaders(auth),
+    cache: "no-store",
+  });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Failed to fetch activity");
   return data;

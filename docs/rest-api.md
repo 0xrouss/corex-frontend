@@ -28,7 +28,7 @@ The runtime sets:
 
 - `Access-Control-Allow-Origin`
 - `Access-Control-Allow-Methods: GET, POST, OPTIONS`
-- `Access-Control-Allow-Headers: Content-Type`
+- `Access-Control-Allow-Headers: Content-Type, X-Corex-Read-Account, X-Corex-Read-Scope, X-Corex-Read-Expires, X-Corex-Read-Signature`
 
 The allowed origin is controlled by `READ_API_ALLOW_ORIGIN` in `.env`.
 
@@ -55,6 +55,40 @@ Frontend implication:
 - treat this API as the live session view of the TEE
 - do not assume it is a durable historical source
 
+## Read Authorization
+
+The frontend now proxies account-scoped reads through same-origin `/api/corex/*`
+routes and attaches a short-lived wallet-signed read authorization.
+
+Protected TEE routes:
+
+- `GET /account`
+- `GET /orders`
+- `GET /activity`
+
+Required headers:
+
+- `X-Corex-Read-Account`
+- `X-Corex-Read-Scope`
+- `X-Corex-Read-Expires`
+- `X-Corex-Read-Signature`
+
+Signing rules:
+
+- the signature is EIP-712 typed data
+- domain:
+  - `name = "Corex TEE"`
+  - `version = "1"`
+- primary type:
+
+```text
+ReadAuthorization(
+  address account,
+  string scope,
+  uint256 expiresAt
+)
+```
+
 ## Endpoints
 
 ### `GET /account`
@@ -68,7 +102,11 @@ Query params:
 Example:
 
 ```bash
-curl "http://127.0.0.1:6680/account?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb"
+curl "http://127.0.0.1:6680/account?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
+  -H "X-Corex-Read-Account: 0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
+  -H "X-Corex-Read-Scope: account-read" \
+  -H "X-Corex-Read-Expires: 1760000000" \
+  -H "X-Corex-Read-Signature: 0x..."
 ```
 
 Response:
@@ -112,6 +150,12 @@ Errors:
 {"error":"invalid account"}
 ```
 
+- invalid or missing read auth:
+
+```json
+{"error":"invalid read authorization signature"}
+```
+
 ### `GET /orders`
 
 Returns all known orders for one account.
@@ -131,11 +175,19 @@ Supported `status` values:
 Examples:
 
 ```bash
-curl "http://127.0.0.1:6680/orders?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb"
+curl "http://127.0.0.1:6680/orders?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
+  -H "X-Corex-Read-Account: 0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
+  -H "X-Corex-Read-Scope: account-read" \
+  -H "X-Corex-Read-Expires: 1760000000" \
+  -H "X-Corex-Read-Signature: 0x..."
 ```
 
 ```bash
-curl "http://127.0.0.1:6680/orders?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb&status=OPEN"
+curl "http://127.0.0.1:6680/orders?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb&status=OPEN" \
+  -H "X-Corex-Read-Account: 0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
+  -H "X-Corex-Read-Scope: account-read" \
+  -H "X-Corex-Read-Expires: 1760000000" \
+  -H "X-Corex-Read-Signature: 0x..."
 ```
 
 Response:
@@ -188,8 +240,8 @@ Errors:
 
 ### `GET /state`
 
-This route returns the full serialized Corex runtime state. It is useful for
-debugging, but it is broader than what the frontend should normally consume.
+This route returns the full serialized Corex runtime state, but it is disabled
+by default because it exposes all accounts and events.
 
 Example:
 

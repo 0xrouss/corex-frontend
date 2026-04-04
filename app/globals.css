@@ -2,36 +2,36 @@
 
 :root {
   /* Backgrounds — warm charcoal, not blue-black */
-  --bg:          oklch(8.5%  0.008 65);
-  --bg-raised:   oklch(12%   0.009 65);
-  --bg-surface:  oklch(16%   0.011 65);
+  --bg: oklch(13.5% 0.008 65);
+  --bg-raised: oklch(17% 0.009 65);
+  --bg-surface: oklch(21% 0.011 65);
 
   /* Text — warm ivory scale */
-  --fg:          oklch(90%   0.007 80);
-  --fg-muted:    oklch(52%   0.009 68);
-  --fg-subtle:   oklch(34%   0.006 65);
+  --fg: oklch(95% 0.007 80);
+  --fg-muted: oklch(57% 0.009 68);
+  --fg-subtle: oklch(39% 0.006 65);
 
   /* Accent — refined gold, not neon amber */
-  --accent:       oklch(72%  0.11  68);
-  --accent-dim:   oklch(72%  0.11  68 / 0.12);
-  --accent-border: oklch(72% 0.11  68 / 0.28);
+  --accent: oklch(77% 0.11 68);
+  --accent-dim: oklch(77% 0.11 68 / 0.12);
+  --accent-border: oklch(77% 0.11 68 / 0.28);
 
   /* Semantic — sage green + terracotta, not neon */
-  --buy:          oklch(68%  0.11  152);
-  --buy-dim:      oklch(68%  0.11  152 / 0.13);
-  --buy-border:   oklch(68%  0.11  152 / 0.28);
+  --buy: oklch(73% 0.11 152);
+  --buy-dim: oklch(73% 0.11 152 / 0.13);
+  --buy-border: oklch(73% 0.11 152 / 0.28);
 
-  --sell:         oklch(61%  0.14  25);
-  --sell-dim:     oklch(61%  0.14  25 / 0.12);
-  --sell-border:  oklch(61%  0.14  25 / 0.26);
+  --sell: oklch(66% 0.14 25);
+  --sell-dim: oklch(66% 0.14 25 / 0.12);
+  --sell-border: oklch(66% 0.14 25 / 0.26);
 
-  --error:        oklch(61%  0.14  25);
-  --error-dim:    oklch(61%  0.14  25 / 0.09);
-  --error-border: oklch(61%  0.14  25 / 0.24);
+  --error: oklch(66% 0.14 25);
+  --error-dim: oklch(66% 0.14 25 / 0.09);
+  --error-border: oklch(66% 0.14 25 / 0.24);
 
   /* Borders */
-  --border:       oklch(20%  0.009 65);
-  --border-strong: oklch(28% 0.011 65);
+  --border: oklch(25% 0.009 65);
+  --border-strong: oklch(33% 0.011 65);
 
   /* Legacy aliases (keep for gradual migration) */
   --background: var(--bg);
@@ -48,7 +48,9 @@
   --font-display: var(--font-space-grotesk);
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
   background: var(--bg);
@@ -61,17 +63,35 @@ body {
 
 /* Page entry animation */
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-main > * { animation: fade-up 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+main > * {
+  animation: fade-up 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 
 /* Thin warm scrollbar */
-::-webkit-scrollbar            { width: 4px; height: 4px; }
-::-webkit-scrollbar-track      { background: transparent; }
-::-webkit-scrollbar-thumb      { background: var(--fg-subtle); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--fg-subtle);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-muted);
+}
 
 /* Select — hide default arrow, add custom */
 select {
@@ -82,10 +102,14 @@ select {
   cursor: pointer;
 }
 
-select option { background: oklch(16% 0.011 65); }
+select option {
+  background: oklch(21% 0.011 65);
+}
 
 /* Input focus ring */
-input:focus-visible, select:focus-visible, textarea:focus-visible {
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
   outline: 1px solid var(--accent-border);
   outline-offset: 0;
 }

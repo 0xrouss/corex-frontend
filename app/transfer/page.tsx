@@ -21,6 +21,7 @@ import {
   type SubmitWithdrawIntentResult,
   type SyncDepositResult,
 } from "@/lib/corex";
+import { ensureCorexReadAuth } from "@/lib/corex-read-auth";
 import {
   fetchAccount,
   fetchActivity,
@@ -526,8 +527,15 @@ function TransferView({ address }: { address: string }) {
     setLoading(true);
     setLoadError(null);
     try {
+      const auth = await ensureCorexReadAuth({
+        address: address as Address,
+        signTypedDataAsync,
+      });
       const [markets, account, activity, corexConfig] = await Promise.all([
-        fetchMarkets(), fetchAccount(address), fetchActivity(address), fetchCorexConfig(),
+        fetchMarkets(),
+        fetchAccount(address, auth),
+        fetchActivity(address, auth),
+        fetchCorexConfig(),
       ]);
       setSnapshot({ markets, account, activity });
       setConfig(corexConfig);
@@ -539,7 +547,14 @@ function TransferView({ address }: { address: string }) {
   }
 
   async function refreshAccountSnapshot() {
-    const [account, activity] = await Promise.all([fetchAccount(address), fetchActivity(address)]);
+    const auth = await ensureCorexReadAuth({
+      address: address as Address,
+      signTypedDataAsync,
+    });
+    const [account, activity] = await Promise.all([
+      fetchAccount(address, auth),
+      fetchActivity(address, auth),
+    ]);
     setSnapshot((current) => current ? { ...current, account, activity } : null);
   }
 

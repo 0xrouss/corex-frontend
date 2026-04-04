@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSignTypedData } from "wagmi";
 import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { fetchAccount, fetchMarkets } from "@/lib/api";
+import { ensureCorexReadAuth } from "@/lib/corex-read-auth";
 import { formatTokenAmount } from "@/lib/corex";
 
 interface Balance {
@@ -23,26 +25,50 @@ interface TokenMeta {
 }
 
 function AccountView({ address }: { address: string }) {
+  const { signTypedDataAsync } = useSignTypedData();
   const [data, setData] = useState<AccountData | null>(null);
   const [tokenMap, setTokenMap] = useState<Record<string, TokenMeta>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    Promise.all([fetchAccount(address), fetchMarkets()])
-      .then(([accountData, marketsData]) => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+      setData(null);
+      try {
+        const auth = await ensureCorexReadAuth({ address: address as `0x${string}`, signTypedDataAsync });
+        const [accountData, marketsData] = await Promise.all([
+          fetchAccount(address, auth),
+          fetchMarkets(),
+        ]);
+        if (cancelled) {
+          return;
+        }
         setData(accountData);
         const map: Record<string, TokenMeta> = {};
         for (const t of marketsData.tokens ?? []) {
           map[t.address.toLowerCase()] = { symbol: t.symbol, decimals: t.decimals };
         }
         setTokenMap(map);
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [address]);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to fetch account");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, signTypedDataAsync]);
 
   function formatBalance(raw: string, tokenAddress: string): string {
     const meta = tokenMap[tokenAddress.toLowerCase()];

@@ -3,7 +3,7 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { formatUnits } from "viem";
 import type { Address, Hex } from "viem";
-import { usePublicClient, useWriteContract } from "wagmi";
+import { usePublicClient, useSignTypedData, useWriteContract } from "wagmi";
 import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { XRPChart } from "@/components/xrp-chart";
@@ -18,6 +18,7 @@ import {
   shortAddress,
   type CorexFrontendConfig,
 } from "@/lib/corex";
+import { ensureCorexReadAuth } from "@/lib/corex-read-auth";
 import {
   fetchAccount,
   fetchCorexConfig,
@@ -155,6 +156,12 @@ function lockedAmountPreview(
   return `~${q.toFixed(4)} ${base.symbol}`;
 }
 
+function quoteAmountRawForOrder(priceRaw: bigint, qtyRaw: bigint, baseDecimals: number): bigint {
+  if (baseDecimals <= 0) return priceRaw * qtyRaw;
+  const scale = BigInt(10) ** BigInt(baseDecimals);
+  return (priceRaw * qtyRaw) / scale;
+}
+
 // ─── Shared sub-components ───────────────────────────────────────────────────
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -265,6 +272,7 @@ function OrdersSkeleton() {
 
 function TradeView({ address }: { address: string }) {
   const publicClient = usePublicClient();
+  const { signTypedDataAsync } = useSignTypedData();
   const { writeContractAsync } = useWriteContract();
 
   const [config, setConfig] = useState<CorexFrontendConfig | null>(null);
@@ -299,21 +307,28 @@ function TradeView({ address }: { address: string }) {
     if (markets.markets.length > 0) setSelectedMarket(markets.markets[0]);
   }, []);
 
+  const getReadAuth = useCallback(
+    () => ensureCorexReadAuth({ address: address as Address, signTypedDataAsync }),
+    [address, signTypedDataAsync],
+  );
+
   const loadAccount = useCallback(async () => {
     try {
-      const data = await fetchAccount(address);
+      const auth = await getReadAuth();
+      const data = await fetchAccount(address, auth);
       setBalances(data.balances ?? {});
     } catch {
       // non-critical
     }
-  }, [address]);
+  }, [address, getReadAuth]);
 
   const loadOrders = useCallback(async () => {
     setLoadingOrders(true);
     try {
+      const auth = await getReadAuth();
       const [open, partial] = await Promise.all([
-        fetchOrders(address, "OPEN"),
-        fetchOrders(address, "PARTIAL"),
+        fetchOrders(address, auth, "OPEN"),
+        fetchOrders(address, auth, "PARTIAL"),
       ]);
       setActiveOrders([...(open.orders ?? []), ...(partial.orders ?? [])]);
     } catch (e) {
@@ -321,7 +336,7 @@ function TradeView({ address }: { address: string }) {
     } finally {
       setLoadingOrders(false);
     }
-  }, [address]);
+  }, [address, getReadAuth]);
 
   useEffect(() => {
     loadConfig().catch((e: unknown) => setLoadError(getErrorMessage(e)));
@@ -352,7 +367,7 @@ function TradeView({ address }: { address: string }) {
     if (!config || !publicClient || !selectedMarket || !base || !quote) return;
     try {
       const priceRaw = parseAmountInput(price, quote.decimals);
-      const qtyRaw = BigInt(Math.floor(parseFloat(qty)));
+      const qtyRaw = parseAmountInput(qty, base.decimals);
       const clientOrderId = generateClientOrderId();
       const sideUint8 = side === "BUY" ? 0 : 1;
       const tifUint8 = tif === "GTC" ? 0 : tif === "IOC" ? 1 : 2;
@@ -470,11 +485,16 @@ function TradeView({ address }: { address: string }) {
   const insufficientFunds = (() => {
     if (!price || !qty || isNaN(priceFloat) || isNaN(qtyFloat)) return false;
     try {
-      if (side === "BUY" && quote && quoteBalanceRaw) {
+      if (side === "BUY" && base && quote && quoteBalanceRaw) {
         const priceRaw = parseAmountInput(price, quote.decimals);
-        return priceRaw * BigInt(Math.floor(qtyFloat)) > BigInt(quoteBalanceRaw.available);
+        const qtyRaw = parseAmountInput(qty, base.decimals);
+        const requiredQuoteRaw = quoteAmountRawForOrder(priceRaw, qtyRaw, base.decimals);
+        return requiredQuoteRaw > BigInt(quoteBalanceRaw.available);
       }
-      if (side === "SELL" && baseAvailable !== null) return qtyFloat > baseAvailable;
+      if (side === "SELL" && base && baseBalanceRaw) {
+        const qtyRaw = parseAmountInput(qty, base.decimals);
+        return qtyRaw > BigInt(baseBalanceRaw.available);
+      }
     } catch {}
     return false;
   })();
@@ -861,7 +881,13 @@ function TradeView({ address }: { address: string }) {
                             : order.price}
                         </span>
                         <span style={{ marginLeft: "6px", fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
-                          {order.remainingQty}{" / "}{order.initialQty}
+                          {selectedMarket
+                            ? safeFormatAmount(order.remainingQty, selectedMarket.baseDecimals)
+                            : order.remainingQty}
+                          {" / "}
+                          {selectedMarket
+                            ? safeFormatAmount(order.initialQty, selectedMarket.baseDecimals)
+                            : order.initialQty}
                         </span>
                       </div>
 
