@@ -8,6 +8,7 @@ const READ_AUTH_SCOPE = "account-read";
 const READ_AUTH_TTL_SECONDS = 240;
 const READ_AUTH_REFRESH_BUFFER_SECONDS = 30;
 const READ_AUTH_CACHE_PREFIX = "corex-read-auth:v2:";
+const pendingAuthByAccount = new Map<Address, Promise<CorexReadAuth>>();
 
 const readAuthorizationTypes = {
   ReadAuthorization: [
@@ -76,21 +77,35 @@ export async function ensureCorexReadAuth(params: {
     return cached;
   }
 
-  const expiresAt = now + READ_AUTH_TTL_SECONDS;
-  const auth: CorexReadAuth = {
-    account,
-    scope: READ_AUTH_SCOPE,
-    expiresAt,
-    signature: await params.signTypedDataAsync(
-      buildCorexReadAuthTypedData({
-        account,
-        scope: READ_AUTH_SCOPE,
-        expiresAt,
-      }),
-    ),
-  };
-  writeCachedAuth(auth);
-  return auth;
+  const pending = pendingAuthByAccount.get(account);
+  if (pending) {
+    return pending;
+  }
+
+  const next = (async () => {
+    const expiresAt = unixNow() + READ_AUTH_TTL_SECONDS;
+    const auth: CorexReadAuth = {
+      account,
+      scope: READ_AUTH_SCOPE,
+      expiresAt,
+      signature: await params.signTypedDataAsync(
+        buildCorexReadAuthTypedData({
+          account,
+          scope: READ_AUTH_SCOPE,
+          expiresAt,
+        }),
+      ),
+    };
+    writeCachedAuth(auth);
+    return auth;
+  })();
+
+  pendingAuthByAccount.set(account, next);
+  try {
+    return await next;
+  } finally {
+    pendingAuthByAccount.delete(account);
+  }
 }
 
 function normalizeAddress(address: Address): Address {
