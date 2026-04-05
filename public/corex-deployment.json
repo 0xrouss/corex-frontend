@@ -1,0 +1,24 @@
+{
+  "network": "coston2",
+  "chainId": 114,
+  "instructionSender": "0xbaB5bAdA6aB701B97D220342Cd9410A7978eD317",
+  "extensionId": "0x0000000000000000000000000000000000000000000000000000000000000135",
+  "market": {
+    "marketId": "COREXTEST",
+    "marketIdBytes32": "0x434f524558544553540000000000000000000000000000000000000000000000",
+    "baseToken": "0xbA2273B3165938a84dCe6Ad9e53806EFA83e3151",
+    "quoteToken": "0x8F1f47aB49C2b87ba421C4583EB7253c1b4b14c5",
+    "baseDecimals": 18,
+    "quoteDecimals": 6,
+    "baseTokenName": "Flare XRP",
+    "baseTokenSymbol": "FXRP",
+    "quoteTokenName": "USDT0",
+    "quoteTokenSymbol": "USDT0"
+  },
+  "custody": {
+    "address": "0x0D710AA11b1912fFF6Bdc5cfD92f2417b87BED61"
+  },
+  "withdraw": {
+    "authorizedSigner": "0x9b08E1FA63B05F2C852b49FAFC0d56Cb208aadED"
+  }
+}
