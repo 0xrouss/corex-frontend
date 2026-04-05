@@ -110,14 +110,6 @@ function resolveDeploymentFilePaths(): string[] {
         "coston2",
         "corex-deployment.json",
       ),
-      path.resolve(
-        process.cwd(),
-        "..",
-        "fce-weather-api",
-        "config",
-        "coston2",
-        "corex-deployment.json",
-      ),
     ];
   }
 

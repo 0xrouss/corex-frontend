@@ -1,85 +1,76 @@
-# Corex Read API
+# Frontend API Surface
 
-This document describes the REST endpoints exposed by the running Corex TEE
-extension for frontend reads.
+This document explains the API contract as the frontend sees it.
 
-These endpoints are served by the extension runtime itself, not by the smart
-contracts and not by `ext-proxy`.
+The canonical runtime API is documented in `../../corex-tee/docs/rest-api.md`.
+This frontend-specific note focuses on:
 
-## Base URL
+- which requests go straight to the TEE runtime
+- which requests are proxied through Next.js
+- which requests require wallet signatures
 
-Local default:
+## Base URLs
+
+### Browser-visible TEE runtime URL
+
+By default the frontend reads public runtime endpoints from:
 
 ```text
 http://127.0.0.1:6680
 ```
 
-This bind is controlled by `EXTENSION_API_BIND` in `.env`.
-
-Example:
+Configured through:
 
 ```bash
-EXTENSION_API_BIND="127.0.0.1:6680"
+NEXT_PUBLIC_API_URL=http://127.0.0.1:6680
 ```
 
-## CORS
+### Same-origin Next.js routes
 
-The runtime sets:
+The frontend also exposes internal API routes under:
 
-- `Access-Control-Allow-Origin`
-- `Access-Control-Allow-Methods: GET, POST, OPTIONS`
-- `Access-Control-Allow-Headers: Content-Type, X-Corex-Read-Account, X-Corex-Read-Scope, X-Corex-Read-Expires, X-Corex-Read-Signature`
-
-The allowed origin is controlled by `READ_API_ALLOW_ORIGIN` in `.env`.
-
-Example:
-
-```bash
-READ_API_ALLOW_ORIGIN="*"
+```text
+/api/corex/*
 ```
 
-## Important Runtime Constraint
+These are used whenever the browser should not know about server-side config or
+when the frontend needs consistent proxy behavior.
 
-This API reads directly from the TEE runtime's in-memory Corex state.
+## Route Mapping
 
-What that means:
+| Frontend call | Upstream target | Why it exists |
+| --- | --- | --- |
+| `GET /api/corex/config` | deployment JSON + env, no direct upstream | resolve chain and contract config on the server |
+| `GET /api/corex/account` | `GET /account` | forward signed read-auth headers |
+| `GET /api/corex/orders` | `GET /orders` | forward signed read-auth headers |
+| `GET /api/corex/activity` | `GET /activity` | forward signed read-auth headers |
+| `POST /api/corex/place-order-intent` | `POST /place-order-intent` | same-origin proxy for direct order intent |
+| `POST /api/corex/cancel-order-intent` | `POST /cancel-order-intent` | same-origin proxy for direct cancel intent |
+| `POST /api/corex/withdraw-intent` | `POST /withdraw-intent` | same-origin proxy for direct withdraw intent |
+| `GET /api/corex/proxy-result/:instructionId` | `GET http://127.0.0.1:6676/action/result/:instructionId` | poll ext-proxy for contract-backed writes |
 
-- completed orders remain visible with status `FILLED` or `CANCELED`
-- active orders remain visible with status `OPEN` or `PARTIAL`
-- if the `extension-tee` container restarts, this read model resets
-- after a restart, old orders and balances are not persisted unless the state is
-  rebuilt through new instructions
+## Public Browser Reads
 
-Frontend implication:
+These requests are made directly from the browser to `NEXT_PUBLIC_API_URL`:
 
-- treat this API as the live session view of the TEE
-- do not assume it is a durable historical source
+- `GET /markets`
+- `GET /state`
 
-## Read Authorization
+Notes:
 
-The frontend now proxies account-scoped reads through same-origin `/api/corex/*`
-routes and attaches a short-lived wallet-signed read authorization.
+- `/markets` is expected to be public
+- `/state` is debug-only and may fail unless the runtime enables it
 
-Protected TEE routes:
+## Protected Browser Reads
 
-- `GET /account`
-- `GET /orders`
-- `GET /activity`
+These reads require a short-lived wallet signature and go through same-origin
+Next routes:
 
-Required headers:
+- account snapshot
+- order list
+- activity list
 
-- `X-Corex-Read-Account`
-- `X-Corex-Read-Scope`
-- `X-Corex-Read-Expires`
-- `X-Corex-Read-Signature`
-
-Signing rules:
-
-- the signature is EIP-712 typed data
-- domain:
-  - `name = "Corex TEE"`
-  - `version = "1"`
-- primary type:
+The frontend signs the EIP-712 type:
 
 ```text
 ReadAuthorization(
@@ -89,321 +80,98 @@ ReadAuthorization(
 )
 ```
 
-## Endpoints
+Domain:
 
-### `GET /account`
+- `name = "Corex TEE"`
+- `version = "1"`
 
-Returns balances and withdraw nonce for one account.
+Current scope:
 
-Query params:
+- `account-read`
 
-- `account` required, EVM address
+Headers forwarded by the Next routes:
 
-Example:
+- `X-Corex-Read-Account`
+- `X-Corex-Read-Scope`
+- `X-Corex-Read-Expires`
+- `X-Corex-Read-Signature`
 
-```bash
-curl "http://127.0.0.1:6680/account?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
-  -H "X-Corex-Read-Account: 0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
-  -H "X-Corex-Read-Scope: account-read" \
-  -H "X-Corex-Read-Expires: 1760000000" \
-  -H "X-Corex-Read-Signature: 0x..."
+## Direct Signed Intents
+
+When direct mode is enabled in `/trade` or `/transfer`, the frontend signs
+EIP-712 typed data and POSTs it to same-origin routes.
+
+### Order intents
+
+Use:
+
+- `POST /api/corex/place-order-intent`
+- `POST /api/corex/cancel-order-intent`
+
+Domain:
+
+- `name = "Corex"`
+- `version = "1"`
+- `chainId = /api/corex/config.chainId`
+- `verifyingContract = /api/corex/config.instructionSender`
+
+### Withdraw intent
+
+Use:
+
+- `POST /api/corex/withdraw-intent`
+
+Domain:
+
+- `name = "Corex"`
+- `version = "1"`
+- `chainId = /api/corex/config.chainId`
+- `verifyingContract = /api/corex/config.custodyAddress`
+
+### Nonces
+
+The frontend reads nonces from `GET /api/corex/account`:
+
+- `orderNonce` for place/cancel
+- `withdrawNonce` for withdraw
+
+The next signed nonce is always `current + 1`.
+
+## Contract-Backed Writes
+
+Contract-backed mode still exists for:
+
+- deposits
+- legacy place/cancel order flow
+- legacy withdraw flow
+
+Those flows use wagmi to submit the on-chain transaction, then call:
+
+```text
+GET /api/corex/proxy-result/:instructionId
 ```
 
-Response:
-
-```json
-{
-  "account": "0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb",
-  "balances": {
-    "0xb2b08fadf30c557425a110af97d5ba6cc91800c9": {
-      "available": "98",
-      "locked": "2"
-    },
-    "0xaf58512c92ca0c6c1a20f22c6ce43e71fb71183f": {
-      "available": "980",
-      "locked": "20"
-    }
-  },
-  "withdrawNonce": "1"
-}
-```
-
-Field notes:
-
-- `balances` is keyed by token address
-- `available` and `locked` are decimal strings
-- `withdrawNonce` is a decimal string
-- if the account has no balances yet, `balances` is an empty object and
-  `withdrawNonce` is `"0"`
-
-Errors:
-
-- missing `account`:
-
-```json
-{"error":"missing required query parameter: account"}
-```
-
-- invalid `account`:
-
-```json
-{"error":"invalid account"}
-```
-
-- invalid or missing read auth:
-
-```json
-{"error":"invalid read authorization signature"}
-```
-
-### `GET /orders`
-
-Returns all known orders for one account.
-
-Query params:
-
-- `account` required, EVM address
-- `status` optional
-
-Supported `status` values:
-
-- `OPEN`
-- `PARTIAL`
-- `FILLED`
-- `CANCELED`
-
-Examples:
-
-```bash
-curl "http://127.0.0.1:6680/orders?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
-  -H "X-Corex-Read-Account: 0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
-  -H "X-Corex-Read-Scope: account-read" \
-  -H "X-Corex-Read-Expires: 1760000000" \
-  -H "X-Corex-Read-Signature: 0x..."
-```
-
-```bash
-curl "http://127.0.0.1:6680/orders?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb&status=OPEN" \
-  -H "X-Corex-Read-Account: 0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb" \
-  -H "X-Corex-Read-Scope: account-read" \
-  -H "X-Corex-Read-Expires: 1760000000" \
-  -H "X-Corex-Read-Signature: 0x..."
-```
-
-Response:
-
-```json
-{
-  "account": "0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb",
-  "orders": [
-    {
-      "orderId": "0xdef18ae8ee22fc8c52298c4f4e84d55f7b8f567be7e5f8629d6c369ee12d93b1",
-      "clientOrderId": "0x1111111111111111111111111111111111111111111111111111111111111111",
-      "user": "0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb",
-      "marketId": "0x434f524558544553540000000000000000000000000000000000000000000000",
-      "side": "SELL",
-      "price": "10",
-      "initialQty": "2",
-      "remainingQty": "0",
-      "lockedAmount": "0",
-      "status": "FILLED",
-      "seq": "4",
-      "timeInForce": "GTC"
-    }
-  ]
-}
-```
-
-Field notes:
-
-- all numeric values are decimal strings
-- `marketId` is the internal `bytes32`-style hex string stored by the runtime
-- orders are returned in descending sequence order
-- completed orders are still included; they are not removed from the response
-  during normal runtime
-
-Errors:
-
-- missing `account`:
-
-```json
-{"error":"missing required query parameter: account"}
-```
-
-- invalid `account`:
-
-```json
-{"error":"invalid account"}
-```
-
-## Internal Debug Route
-
-### `GET /state`
-
-This route returns the full serialized Corex runtime state, but it is disabled
-by default because it exposes all accounts and events.
-
-Example:
-
-```bash
-curl "http://127.0.0.1:6680/state"
-```
-
-Notes:
-
-- response shape is:
-
-```json
-{
-  "stateVersion": "0x...",
-  "state": {
-    "version": "v1",
-    "market": {},
-    "globalSeq": "0",
-    "balances": {},
-    "appliedDeposits": {},
-    "orders": {},
-    "bidOrderIds": [],
-    "askOrderIds": [],
-    "withdrawNonces": {},
-    "eventLog": [],
-    "signPort": "9090"
-  }
-}
-```
-
-- `state` includes market config, balances, deposits, orders, book ids,
-  withdraw nonces, and event log
-- this is also memory-backed and resets on runtime restart
-
-## Current Scope
-
-The frontend-facing read API currently supports:
-
-- account balances and withdraw nonce
-- orders by account
-- market and token metadata
-- user deposit and withdraw activity
-
-It does not yet expose:
-
-- direct `GET /order?orderId=...`
-- pagination
-- durable historical queries
-- websocket subscriptions
-
-### `GET /markets`
-
-Returns the active Corex market metadata and token metadata exposed by the
-running runtime.
-
-Example:
-
-```bash
-curl "http://127.0.0.1:6680/markets"
-```
-
-Response:
-
-```json
-{
-  "markets": [
-    {
-      "marketId": "COREXTEST",
-      "marketIdBytes32": "0x434f524558544553540000000000000000000000000000000000000000000000",
-      "baseToken": "0xb2b08fadf30c557425a110af97d5ba6cc91800c9",
-      "quoteToken": "0xaf58512c92ca0c6c1a20f22c6ce43e71fb71183f",
-      "baseDecimals": 18,
-      "quoteDecimals": 6
-    }
-  ],
-  "tokens": [
-    {
-      "address": "0xb2b08fadf30c557425a110af97d5ba6cc91800c9",
-      "name": "FXRP",
-      "symbol": "FXRP",
-      "decimals": 18,
-      "role": "BASE"
-    },
-    {
-      "address": "0xaf58512c92ca0c6c1a20f22c6ce43e71fb71183f",
-      "name": "USDT0",
-      "symbol": "USDT0",
-      "decimals": 6,
-      "role": "QUOTE"
-    }
-  ]
-}
-```
-
-Field notes:
-
-- `marketId` is the human-readable market id when available from deployment
-  config
-- `marketIdBytes32` is the on-chain/runtime bytes32 representation
-- token `name` and `symbol` are present when available from the deployment JSON
-
-### `GET /activity`
-
-Returns deposit and withdraw activity for one account.
-
-Query params:
-
-- `account` required, EVM address
-
-Example:
-
-```bash
-curl "http://127.0.0.1:6680/activity?account=0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb"
-```
-
-Response:
-
-```json
-{
-  "account": "0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb",
-  "deposits": [
-    {
-      "depositId": "0x8888888888888888888888888888888888888888888888888888888888888888",
-      "user": "0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb",
-      "token": "0xaf58512c92ca0c6c1a20f22c6ce43e71fb71183f",
-      "amount": "50",
-      "seq": "2"
-    }
-  ],
-  "withdrawals": [
-    {
-      "user": "0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb",
-      "token": "0xaf58512c92ca0c6c1a20f22c6ce43e71fb71183f",
-      "amount": "5",
-      "recipient": "0x00000000000000000000000000000000000000c3",
-      "withdrawNonce": "1",
-      "authorizedSigner": "0x54f5a7a1d0d37bdc4d1db58675b955bd6cd4c1fb",
-      "authorizationDigest": "0x...",
-      "teeAuth": "0x...",
-      "seq": "3"
-    }
-  ]
-}
-```
-
-Field notes:
-
-- `deposits` are derived from the runtime's applied deposit map
-- `withdrawals` are derived from the runtime event log
-- both lists are returned in descending sequence order
-- withdrawals only represent requests that were accepted by the TEE runtime
-
-Errors:
-
-- missing `account`:
-
-```json
-{"error":"missing required query parameter: account"}
-```
-
-- invalid `account`:
-
-```json
-{"error":"invalid account"}
-```
+The Next route polls `ext-proxy` until the TEE action result is available or
+times out.
+
+## Common Failure Modes
+
+- `Project ID is not defined`
+  wallet-connect config is missing.
+- `Corex instruction sender is not configured`
+  the server could not load deployment config.
+- read auth rejected
+  the wallet changed, the signature expired, or the account/header mismatch was
+  detected by the runtime.
+- direct intent rejected
+  the frontend signed against stale `chainId`, `instructionSender`, or
+  `custodyAddress`.
+- proxy polling timeout
+  the on-chain transaction landed but the runtime or `ext-proxy` did not return
+  a settled action result in time.
+
+## Related Docs
+
+- `architecture.md`
+- `../README.md`
+- `../../corex-tee/docs/rest-api.md`
