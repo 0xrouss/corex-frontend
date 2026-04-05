@@ -39,6 +39,45 @@ export async function submitWithdrawIntent(payload: {
   return data;
 }
 
+export async function submitPlaceOrderIntent(payload: {
+  user: string;
+  clientOrderId: string;
+  marketId: string;
+  side: string;
+  price: string;
+  qty: string;
+  timeInForce: string;
+  nonce: string;
+  deadline: string;
+  signature: string;
+}) {
+  const res = await fetch("/api/corex/place-order-intent", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to submit place order intent");
+  return data;
+}
+
+export async function submitCancelOrderIntent(payload: {
+  user: string;
+  orderId: string;
+  nonce: string;
+  deadline: string;
+  signature: string;
+}) {
+  const res = await fetch("/api/corex/cancel-order-intent", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to submit cancel order intent");
+  return data;
+}
+
 export async function fetchAccount(account: string, auth: CorexReadAuth) {
   const res = await fetch(`/api/corex/account?account=${encodeURIComponent(account)}`, {
     headers: buildCorexReadAuthHeaders(auth),

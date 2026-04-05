@@ -46,6 +46,7 @@ export interface RequestWithdrawResult {
   authorizedSigner: Address;
   authorizationDigest: Hex;
   teeAuth: Hex;
+  finalizeTxHash: Hex;
 }
 
 export interface SubmitWithdrawIntentResult {
@@ -62,12 +63,66 @@ export interface SubmitWithdrawIntentResult {
   finalizeTxHash: Hex;
 }
 
+export interface SubmitPlaceOrderIntentResult {
+  orderId: Hex;
+  user: Address;
+  side: "BUY" | "SELL";
+  marketId: Hex;
+  status: "OPEN" | "PARTIAL" | "FILLED" | "CANCELED";
+  filledQty: string;
+  remainingQty: string;
+  lockedAmount: string;
+  fills: Array<{
+    makerOrderId: Hex;
+    makerUser: Address;
+    takerUser: Address;
+    qty: string;
+    price: string;
+  }>;
+  orderNonce: string;
+  deadline: string;
+  intentDigest: Hex;
+}
+
+export interface SubmitCancelOrderIntentResult {
+  orderId: Hex;
+  user: Address;
+  status: "OPEN" | "PARTIAL" | "FILLED" | "CANCELED";
+  unlockedAmount: string;
+  orderNonce: string;
+  deadline: string;
+  intentDigest: Hex;
+}
+
 const withdrawIntentTypes = {
   WithdrawIntent: [
     { name: "user", type: "address" },
     { name: "token", type: "address" },
     { name: "amount", type: "uint256" },
     { name: "recipient", type: "address" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
+
+const placeOrderIntentTypes = {
+  PlaceOrderIntent: [
+    { name: "user", type: "address" },
+    { name: "clientOrderId", type: "bytes32" },
+    { name: "marketId", type: "bytes32" },
+    { name: "side", type: "uint8" },
+    { name: "price", type: "uint256" },
+    { name: "qty", type: "uint256" },
+    { name: "timeInForce", type: "uint8" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
+
+const cancelOrderIntentTypes = {
+  CancelOrderIntent: [
+    { name: "user", type: "address" },
+    { name: "orderId", type: "bytes32" },
     { name: "nonce", type: "uint256" },
     { name: "deadline", type: "uint256" },
   ],
@@ -271,6 +326,55 @@ export function buildWithdrawIntentTypedData(
     },
     types: withdrawIntentTypes,
     primaryType: "WithdrawIntent" as const,
+    message: intent,
+  };
+}
+
+export function buildPlaceOrderIntentTypedData(
+  config: Pick<CorexFrontendConfig, "chainId" | "instructionSender">,
+  intent: {
+    user: Address;
+    clientOrderId: Hex;
+    marketId: Hex;
+    side: 0 | 1;
+    price: bigint;
+    qty: bigint;
+    timeInForce: 0 | 1 | 2;
+    nonce: bigint;
+    deadline: bigint;
+  },
+) {
+  return {
+    domain: {
+      name: "Corex",
+      version: "1",
+      chainId: config.chainId,
+      verifyingContract: config.instructionSender,
+    },
+    types: placeOrderIntentTypes,
+    primaryType: "PlaceOrderIntent" as const,
+    message: intent,
+  };
+}
+
+export function buildCancelOrderIntentTypedData(
+  config: Pick<CorexFrontendConfig, "chainId" | "instructionSender">,
+  intent: {
+    user: Address;
+    orderId: Hex;
+    nonce: bigint;
+    deadline: bigint;
+  },
+) {
+  return {
+    domain: {
+      name: "Corex",
+      version: "1",
+      chainId: config.chainId,
+      verifyingContract: config.instructionSender,
+    },
+    types: cancelOrderIntentTypes,
+    primaryType: "CancelOrderIntent" as const,
     message: intent,
   };
 }

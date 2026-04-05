@@ -8,6 +8,8 @@ import { AddressGuard } from "@/components/ui/address-guard";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { XRPChart } from "@/components/xrp-chart";
 import {
+  buildCancelOrderIntentTypedData,
+  buildPlaceOrderIntentTypedData,
   corexInstructionSenderAbi,
   decodeHexJson,
   formatTokenAmount,
@@ -17,7 +19,10 @@ import {
   parseAmountInput,
   shortAddress,
   type CorexFrontendConfig,
+  type SubmitCancelOrderIntentResult,
+  type SubmitPlaceOrderIntentResult,
 } from "@/lib/corex";
+import { useCorexDirectTxEnabled } from "@/lib/corex-direct-tx";
 import { ensureCorexReadAuth } from "@/lib/corex-read-auth";
 import {
   fetchAccount,
@@ -25,6 +30,8 @@ import {
   fetchMarkets,
   fetchOrders,
   fetchProxyResult,
+  submitCancelOrderIntent,
+  submitPlaceOrderIntent,
 } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -92,6 +99,11 @@ interface CancelOrderResult {
 interface Balance {
   available: string;
   locked: string;
+}
+
+interface AccountSnapshot {
+  balances: Record<string, Balance>;
+  orderNonce: string;
 }
 
 interface ActionState {
@@ -283,7 +295,11 @@ function TradeView({ address }: { address: string }) {
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [balances, setBalances] = useState<Record<string, Balance>>({});
+  const [accountSnapshot, setAccountSnapshot] = useState<AccountSnapshot>({
+    balances: {},
+    orderNonce: "0",
+  });
+  const { enabled: directTxEnabled, setEnabled: setDirectTxEnabled } = useCorexDirectTxEnabled();
 
   const [side, setSide] = useState<Side>("BUY");
   const [price, setPrice] = useState("");
@@ -316,7 +332,10 @@ function TradeView({ address }: { address: string }) {
     try {
       const auth = await getReadAuth();
       const data = await fetchAccount(address, auth);
-      setBalances(data.balances ?? {});
+      setAccountSnapshot({
+        balances: data.balances ?? {},
+        orderNonce: data.orderNonce ?? "0",
+      });
     } catch {
       // non-critical
     }
@@ -364,55 +383,111 @@ function TradeView({ address }: { address: string }) {
   }, [config, publicClient]);
 
   async function handlePlaceOrder() {
-    if (!config || !publicClient || !selectedMarket || !base || !quote) return;
+    if (!config || !selectedMarket || !base || !quote || (!directTxEnabled && !publicClient)) return;
     try {
       const priceRaw = parseAmountInput(price, quote.decimals);
       const qtyRaw = parseAmountInput(qty, base.decimals);
       const clientOrderId = generateClientOrderId();
       const sideUint8 = side === "BUY" ? 0 : 1;
       const tifUint8 = tif === "GTC" ? 0 : tif === "IOC" ? 1 : 2;
+      let result: PlaceOrderResult | SubmitPlaceOrderIntentResult;
+      let txHash: Hex | undefined;
+      let instructionId: Hex | undefined;
 
-      setPlaceState({ kind: "pending", stage: "Submitting", message: `Sending ${side} order via contract…` });
+      if (directTxEnabled) {
+        const nonce = BigInt(accountSnapshot.orderNonce) + BigInt(1);
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 15 * 60);
 
-      const hash = await writeContractAsync({
-        chainId: config.chainId,
-        address: config.instructionSender,
-        abi: corexInstructionSenderAbi,
-        functionName: "placeOrder",
-        args: [{
-          user: address as Address,
+        setPlaceState({
+          kind: "pending",
+          stage: "Signing order intent",
+          message: `Authorizing the ${side} order payload in your wallet.`,
+        });
+
+        const signature = await signTypedDataAsync(
+          buildPlaceOrderIntentTypedData(config, {
+            user: address as Address,
+            clientOrderId,
+            marketId: selectedMarket.marketIdBytes32 as Hex,
+            side: sideUint8,
+            price: priceRaw,
+            qty: qtyRaw,
+            timeInForce: tifUint8,
+            nonce,
+            deadline,
+          }),
+        );
+
+        setPlaceState({
+          kind: "pending",
+          stage: "Submitting direct intent",
+          message: "Posting the signed order intent to the TEE runtime.",
+        });
+
+        result = await submitPlaceOrderIntent({
+          user: address,
           clientOrderId,
-          marketId: selectedMarket.marketIdBytes32 as Hex,
-          side: sideUint8,
-          price: priceRaw,
-          qty: qtyRaw,
-          timeInForce: tifUint8,
-        }],
-        value: BigInt(config.feeWei),
-      });
+          marketId: selectedMarket.marketIdBytes32,
+          side,
+          price: priceRaw.toString(),
+          qty: qtyRaw.toString(),
+          timeInForce: tif,
+          nonce: nonce.toString(),
+          deadline: deadline.toString(),
+          signature,
+        }) as SubmitPlaceOrderIntentResult;
+      } else {
+        const chainClient = publicClient;
+        if (!chainClient) throw new Error("Wallet RPC client is not available");
+        setPlaceState({ kind: "pending", stage: "Submitting", message: `Sending ${side} order via contract.` });
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      assertSuccessfulReceipt(receipt, "placeOrder");
+        txHash = await writeContractAsync({
+          chainId: config.chainId,
+          address: config.instructionSender,
+          abi: corexInstructionSenderAbi,
+          functionName: "placeOrder",
+          args: [{
+            user: address as Address,
+            clientOrderId,
+            marketId: selectedMarket.marketIdBytes32 as Hex,
+            side: sideUint8,
+            price: priceRaw,
+            qty: qtyRaw,
+            timeInForce: tifUint8,
+          }],
+          value: BigInt(config.feeWei),
+        });
 
-      const instructionId = getInstructionIdFromReceipt(receipt, teeExtensionRegistryAddress ?? undefined);
+        const receipt = await chainClient.waitForTransactionReceipt({ hash: txHash });
+        assertSuccessfulReceipt(receipt, "placeOrder");
 
-      setPlaceState({ kind: "pending", stage: "TEE processing", message: "Awaiting TEE confirmation…", txHash: hash, instructionId });
+        instructionId = getInstructionIdFromReceipt(receipt, teeExtensionRegistryAddress ?? undefined);
 
-      const proxyPayload = await fetchProxyResult(instructionId);
-      const actionResult = normalizeProxyActionResult(proxyPayload);
+        setPlaceState({
+          kind: "pending",
+          stage: "TEE processing",
+          message: "Awaiting TEE confirmation.",
+          txHash,
+          instructionId,
+        });
 
-      if (actionResult.status !== 1 || !actionResult.data) {
-        throw new Error(actionResult.log ?? "TEE placeOrder failed");
+        const proxyPayload = await fetchProxyResult(instructionId);
+        const actionResult = normalizeProxyActionResult(proxyPayload);
+
+        if (actionResult.status !== 1 || !actionResult.data) {
+          throw new Error(actionResult.log ?? "TEE placeOrder failed");
+        }
+
+        result = decodeHexJson<PlaceOrderResult>(actionResult.data);
       }
 
-      const result = decodeHexJson<PlaceOrderResult>(actionResult.data);
       setPrice("");
       setQty("");
       setPlaceState({
         kind: "success",
-        stage: "Order placed",
+        stage: directTxEnabled ? "Direct order placed" : "Order placed",
         message: `${side} ${result.status}${result.fills?.length ? ` · ${result.fills.length} fill(s)` : ""} · ${shortAddress(result.orderId)}`,
-        txHash: hash,
+        txHash,
         instructionId,
       });
 
@@ -423,30 +498,69 @@ function TradeView({ address }: { address: string }) {
   }
 
   async function handleCancelOrder(orderId: string) {
-    if (!config || !publicClient) return;
-    setCancelStates((prev) => ({ ...prev, [orderId]: { kind: "pending", message: "Canceling…" } }));
+    if (!config || (!directTxEnabled && !publicClient)) return;
     try {
-      const hash = await writeContractAsync({
-        chainId: config.chainId,
-        address: config.instructionSender,
-        abi: corexInstructionSenderAbi,
-        functionName: "cancelOrder",
-        args: [{ user: address as Address, orderId: orderId as Hex }],
-        value: BigInt(config.feeWei),
-      });
+      let result: CancelOrderResult | SubmitCancelOrderIntentResult;
+      let txHash: Hex | undefined;
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      assertSuccessfulReceipt(receipt, "cancelOrder");
+      if (directTxEnabled) {
+        const nonce = BigInt(accountSnapshot.orderNonce) + BigInt(1);
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 15 * 60);
 
-      const instructionId = getInstructionIdFromReceipt(receipt, teeExtensionRegistryAddress ?? undefined);
-      const proxyPayload = await fetchProxyResult(instructionId);
-      const actionResult = normalizeProxyActionResult(proxyPayload);
+        setCancelStates((prev) => ({
+          ...prev,
+          [orderId]: { kind: "pending", stage: "Signing cancel intent", message: "Authorizing the cancel payload in your wallet." },
+        }));
 
-      if (actionResult.status !== 1 || !actionResult.data) {
-        throw new Error(actionResult.log ?? "TEE cancelOrder failed");
+        const signature = await signTypedDataAsync(
+          buildCancelOrderIntentTypedData(config, {
+            user: address as Address,
+            orderId: orderId as Hex,
+            nonce,
+            deadline,
+          }),
+        );
+
+        setCancelStates((prev) => ({
+          ...prev,
+          [orderId]: { kind: "pending", stage: "Submitting direct intent", message: "Posting the signed cancel intent to the TEE runtime." },
+        }));
+
+        result = await submitCancelOrderIntent({
+          user: address,
+          orderId,
+          nonce: nonce.toString(),
+          deadline: deadline.toString(),
+          signature,
+        }) as SubmitCancelOrderIntentResult;
+      } else {
+        const chainClient = publicClient;
+        if (!chainClient) throw new Error("Wallet RPC client is not available");
+        setCancelStates((prev) => ({ ...prev, [orderId]: { kind: "pending", message: "Canceling." } }));
+
+        txHash = await writeContractAsync({
+          chainId: config.chainId,
+          address: config.instructionSender,
+          abi: corexInstructionSenderAbi,
+          functionName: "cancelOrder",
+          args: [{ user: address as Address, orderId: orderId as Hex }],
+          value: BigInt(config.feeWei),
+        });
+
+        const receipt = await chainClient.waitForTransactionReceipt({ hash: txHash });
+        assertSuccessfulReceipt(receipt, "cancelOrder");
+
+        const instructionId = getInstructionIdFromReceipt(receipt, teeExtensionRegistryAddress ?? undefined);
+        const proxyPayload = await fetchProxyResult(instructionId);
+        const actionResult = normalizeProxyActionResult(proxyPayload);
+
+        if (actionResult.status !== 1 || !actionResult.data) {
+          throw new Error(actionResult.log ?? "TEE cancelOrder failed");
+        }
+
+        result = decodeHexJson<CancelOrderResult>(actionResult.data);
       }
 
-      const result = decodeHexJson<CancelOrderResult>(actionResult.data);
       const canceledOrder = activeOrders.find((o) => o.orderId === orderId);
       const unlockedToken = canceledOrder?.side === "SELL" ? base : quote;
       const unlockedFormatted = unlockedToken
@@ -454,7 +568,12 @@ function TradeView({ address }: { address: string }) {
         : result.unlockedAmount;
       setCancelStates((prev) => ({
         ...prev,
-        [orderId]: { kind: "success", message: `Canceled · unlocked ${unlockedFormatted}${unlockedToken ? ` ${unlockedToken.symbol}` : ""}`, txHash: hash },
+        [orderId]: {
+          kind: "success",
+          stage: directTxEnabled ? "Direct cancel settled" : undefined,
+          message: `Canceled · unlocked ${unlockedFormatted}${unlockedToken ? ` ${unlockedToken.symbol}` : ""}`,
+          txHash,
+        },
       }));
 
       await Promise.all([loadOrders(), loadAccount()]);
@@ -467,8 +586,8 @@ function TradeView({ address }: { address: string }) {
   }
 
   const findBalance = (tokenAddress: string) => {
-    const key = Object.keys(balances).find((k) => k.toLowerCase() === tokenAddress.toLowerCase());
-    return key ? balances[key] : undefined;
+    const key = Object.keys(accountSnapshot.balances).find((k) => k.toLowerCase() === tokenAddress.toLowerCase());
+    return key ? accountSnapshot.balances[key] : undefined;
   };
 
   const baseBalanceRaw  = base  ? findBalance(base.address)  : undefined;
@@ -499,7 +618,7 @@ function TradeView({ address }: { address: string }) {
     return false;
   })();
 
-  const actionsDisabled = !config || !publicClient || !selectedMarket;
+  const actionsDisabled = !config || !selectedMarket || (!directTxEnabled && !publicClient);
   const placePending    = placeState.kind === "pending";
   const canPlace        = !actionsDisabled && !placePending && !!price && !!qty && !insufficientFunds;
 
@@ -507,7 +626,7 @@ function TradeView({ address }: { address: string }) {
     <div className="mx-auto px-5 py-8 sm:px-7" style={{ maxWidth: "1400px" }}>
       {/* Header */}
       <div style={{ marginBottom: "24px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <h1
             style={{
               fontFamily: "var(--font-space-grotesk)",
@@ -535,6 +654,43 @@ function TradeView({ address }: { address: string }) {
           >
             Dark Pool
           </span>
+          <div
+            style={{
+              display: "flex",
+              borderRadius: "3px",
+              overflow: "hidden",
+              border: "1px solid var(--border)",
+            }}
+          >
+            {([
+              { id: true,  label: "Direct" },
+              { id: false, label: "Contract" },
+            ] as const).map(({ id, label }) => {
+              const active = directTxEnabled === id;
+              return (
+                <button
+                  key={label}
+                  onClick={() => setDirectTxEnabled(id)}
+                  style={{
+                    padding: "4px 10px",
+                    border: "none",
+                    borderRight: id ? "1px solid var(--border)" : "none",
+                    background: active ? "var(--accent-dim)" : "transparent",
+                    color: active ? "var(--accent)" : "var(--fg-subtle)",
+                    fontSize: "10px",
+                    fontWeight: 600,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    cursor: "pointer",
+                    fontFamily: "var(--font-space-grotesk)",
+                    transition: "background 0.12s ease, color 0.12s ease",
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
         <p style={{ marginTop: "4px", fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
           {address}
@@ -564,6 +720,114 @@ function TradeView({ address }: { address: string }) {
 
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             {/* Market picker */}
+            {/* Execution Mode — segmented control */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: 600,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  color: "var(--fg-subtle)",
+                  fontFamily: "var(--font-space-grotesk)",
+                }}
+              >
+                Execution Mode
+              </span>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  padding: "3px",
+                  background: "var(--bg-surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "4px",
+                  gap: "2px",
+                }}
+              >
+                {([
+                  { id: true,  label: "Direct",   detail: "EIP-712 · gasless" },
+                  { id: false, label: "Contract",  detail: `on-chain · ${config?.feeWei ?? "—"} wei` },
+                ] as const).map(({ id, label, detail }) => {
+                  const active = directTxEnabled === id;
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => setDirectTxEnabled(id)}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: "3px",
+                        border: active ? "1px solid var(--accent-border)" : "1px solid transparent",
+                        background: active ? "var(--accent-dim)" : "transparent",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "background 0.12s ease, border-color 0.12s ease",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "block",
+                          fontSize: "11px",
+                          fontWeight: 700,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                          color: active ? "var(--accent)" : "var(--fg-subtle)",
+                          fontFamily: "var(--font-space-grotesk)",
+                        }}
+                      >
+                        {label}
+                      </span>
+                      <span
+                        style={{
+                          display: "block",
+                          marginTop: "1px",
+                          fontSize: "10px",
+                          color: active ? "var(--fg-muted)" : "var(--fg-subtle)",
+                        }}
+                      >
+                        {detail}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Mode detail strip */}
+              <div
+                style={{
+                  padding: "6px 10px",
+                  background: "var(--bg-surface)",
+                  borderRadius: "3px",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  gap: "20px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>
+                  <span style={{ fontSize: "10px", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--fg-subtle)", marginRight: "4px" }}>
+                    Path
+                  </span>
+                  {directTxEnabled ? "Wallet → TEE runtime" : "Contract → TEE proxy"}
+                </span>
+                {directTxEnabled ? (
+                  <span style={{ fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
+                    <span style={{ fontSize: "10px", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--fg-subtle)", marginRight: "4px" }}>
+                      Nonce
+                    </span>
+                    {(BigInt(accountSnapshot.orderNonce) + BigInt(1)).toString()}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: "11px", color: "var(--fg-muted)", fontVariantNumeric: "tabular-nums" }}>
+                    <span style={{ fontSize: "10px", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--fg-subtle)", marginRight: "4px" }}>
+                      Fee
+                    </span>
+                    {config?.feeWei ?? "—"} wei
+                  </span>
+                )}
+              </div>
+            </div>
+
             <Field label="Market">
               <select
                 value={selectedMarket?.marketId ?? ""}
@@ -710,7 +974,9 @@ function TradeView({ address }: { address: string }) {
                   { k: "Qty",      v: qty ? `${qty} ${base.symbol}` : "—" },
                   { k: "TIF",      v: tif },
                   { k: "Locks",    v: price && qty ? lockedAmountPreview(side, price, qty, selectedMarket, marketsData?.tokens ?? []) : "—" },
-                  { k: "Fee",      v: config ? `${config.feeWei} wei` : "—" },
+                  { k: "Path",     v: directTxEnabled ? "direct EIP-712" : "contract + proxy" },
+                  { k: "Nonce",    v: directTxEnabled ? (BigInt(accountSnapshot.orderNonce) + BigInt(1)).toString() : "—" },
+                  { k: "Fee",      v: !directTxEnabled && config ? `${config.feeWei} wei` : directTxEnabled ? "0 on-chain" : "—" },
                 ].map(({ k, v }) => (
                   <div key={k}>
                     <span style={{ fontSize: "10px", color: "var(--fg-subtle)", letterSpacing: "0.08em", textTransform: "uppercase", display: "block" }}>{k}</span>
@@ -765,7 +1031,7 @@ function TradeView({ address }: { address: string }) {
                 ),
               }}
             >
-              {placePending ? "Placing…" : `Place ${side} Order`}
+              {placePending ? "Placing..." : directTxEnabled ? `Sign ${side} Order` : `Place ${side} Order`}
             </button>
 
             <ActionBanner state={placeState} />

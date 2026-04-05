@@ -1,3 +1,28 @@
+# Task: Add direct EIP-712 order intents and frontend toggle
+
+## Plan
+
+- [ ] Confirm the existing contract-backed place/cancel/withdraw paths and define the direct EIP-712 request contracts needed for parity.
+- [ ] Add TEE runtime `POST /place-order-intent` and `POST /cancel-order-intent` endpoints with EIP-712 verification, replay-safe order-intent nonces, and focused tests.
+- [ ] Add shared frontend typed-data helpers and same-origin Next proxy routes for the new order intent endpoints.
+- [ ] Add a persisted frontend toggle that switches trade place/cancel and transfer withdraw between contract-backed flow and direct EIP-712 flow.
+- [ ] Verify with targeted Go tests, frontend lint, and frontend typecheck, then record the review here.
+
+## Review
+
+- Added direct TEE REST endpoints for `POST /place-order-intent` and `POST /cancel-order-intent`, backed by runtime EIP-712 verification against the configured `instructionSender` domain.
+- Added a replay-safe per-user `orderNonce` in the TEE state and surfaced it through `GET /account` so direct order intents are not replayable.
+- Added frontend typed-data builders and same-origin Next proxy routes for place/cancel intents, matching the existing withdraw-intent proxy pattern.
+- Added a persisted frontend toggle (`Direct EIP-712 On/Off`) on `/trade` and `/transfer`:
+  - `/trade` now switches place and cancel between contract-backed instruction-sender flow and direct EIP-712 REST submission.
+  - `/transfer` withdraw now switches between the existing direct EIP-712 path and the older `requestWithdraw()` contract-backed path.
+- Verification:
+  - `cd /home/rouss/hackathons/corex/corex-tee/go && GOCACHE=/tmp/corex-go-cache go test ./internal/app -run TestCorexHandlers -count=1`
+  - `cd /home/rouss/hackathons/corex/frontend && npx eslint app/trade/page.tsx app/transfer/page.tsx app/api/corex/place-order-intent/route.ts app/api/corex/cancel-order-intent/route.ts lib/api.ts lib/corex.ts lib/corex-direct-tx.ts lib/server/corex-config.ts app/api/corex/withdraw-intent/route.ts`
+  - `cd /home/rouss/hackathons/corex/frontend && npx tsc --noEmit`
+
+---
+
 # Task: Fix protected read auth connector regression on transfer
 
 ## Plan

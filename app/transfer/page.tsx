@@ -18,9 +18,11 @@ import {
   parseAmountInput,
   shortAddress,
   type CorexFrontendConfig,
+  type RequestWithdrawResult,
   type SubmitWithdrawIntentResult,
   type SyncDepositResult,
 } from "@/lib/corex";
+import { useCorexDirectTxEnabled } from "@/lib/corex-direct-tx";
 import { ensureCorexReadAuth } from "@/lib/corex-read-auth";
 import {
   fetchAccount,
@@ -39,6 +41,7 @@ interface Balance {
 interface AccountData {
   account: string;
   balances: Record<string, Balance>;
+  orderNonce?: string;
   withdrawNonce: string;
 }
 
@@ -463,6 +466,7 @@ function TransferView({ address }: { address: string }) {
   const [depositWalletBalanceLoading, setDepositWalletBalanceLoading] = useState(false);
   const [depositWalletBalanceError, setDepositWalletBalanceError] = useState<string | null>(null);
   const [depositWalletBalanceVersion, setDepositWalletBalanceVersion] = useState(0);
+  const { enabled: directTxEnabled, setEnabled: setDirectTxEnabled } = useCorexDirectTxEnabled();
 
   useEffect(() => { void loadAll(); }, [address]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!recipient) setRecipient(address); }, [address, recipient]);
@@ -520,7 +524,7 @@ function TransferView({ address }: { address: string }) {
 
   const depositActionsDisabled =
     !config || !publicClient || selectedTeeIds.length === 0 || loading;
-  const withdrawActionsDisabled = !config || loading;
+  const withdrawActionsDisabled = !config || loading || (!directTxEnabled && !publicClient);
   const mintActionsDisabled = !config || !publicClient || loading;
 
   async function loadAll() {
@@ -593,7 +597,7 @@ function TransferView({ address }: { address: string }) {
   }
 
   async function handleWithdraw() {
-    if (!config || !withdrawTokenMeta || !snapshot) return;
+    if (!config || !withdrawTokenMeta || !snapshot || (!directTxEnabled && !publicClient)) return;
     try {
       const amount = parseAmountInput(withdrawAmount, withdrawTokenMeta.decimals);
       const user = address as Address;
@@ -604,48 +608,99 @@ function TransferView({ address }: { address: string }) {
       }
       const recipientAddress = recipientValue as Address;
       const nonce = BigInt(snapshot.account.withdrawNonce) + BigInt(1);
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 15 * 60);
+      let settled: RequestWithdrawResult | SubmitWithdrawIntentResult;
+      let instructionId: Hex | undefined;
+      let txHashes: Hex[] | undefined;
 
-      setWithdrawState({
-        kind: "pending",
-        stage: "Signing withdraw intent",
-        message: "Authorizing the EIP-712 withdraw payload in your wallet.",
-      });
+      if (directTxEnabled) {
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 15 * 60);
 
-      const signature = await signTypedDataAsync(
-        buildWithdrawIntentTypedData(config, {
+        setWithdrawState({
+          kind: "pending",
+          stage: "Signing withdraw intent",
+          message: "Authorizing the EIP-712 withdraw payload in your wallet.",
+        });
+
+        const signature = await signTypedDataAsync(
+          buildWithdrawIntentTypedData(config, {
+            user,
+            token,
+            amount,
+            recipient: recipientAddress,
+            nonce,
+            deadline,
+          }),
+        );
+
+        setWithdrawState({
+          kind: "pending",
+          stage: "Submitting direct intent",
+          message: "Posting the signed intent to the TEE runtime and waiting for on-chain finalization.",
+        });
+
+        settled = await submitWithdrawIntent({
           user,
           token,
-          amount,
+          amount: amount.toString(),
           recipient: recipientAddress,
-          nonce,
-          deadline,
-        }),
-      );
+          nonce: nonce.toString(),
+          deadline: deadline.toString(),
+          signature,
+        }) as SubmitWithdrawIntentResult;
+        txHashes = [settled.finalizeTxHash];
+      } else {
+        const chainClient = publicClient;
+        if (!chainClient) throw new Error("Wallet RPC client is not available");
+        setWithdrawState({
+          kind: "pending",
+          stage: "Submitting withdraw request",
+          message: "Sending requestWithdraw() through the instruction sender and waiting for the TEE result.",
+        });
 
-      setWithdrawState({
-        kind: "pending",
-        stage: "Submitting to TEE",
-        message: "Posting the signed intent to the TEE runtime and waiting for on-chain finalization.",
-      });
+        const requestHash = await writeContractAsync({
+          chainId: config.chainId,
+          address: config.instructionSender,
+          abi: corexInstructionSenderAbi,
+          functionName: "requestWithdraw",
+          args: [{
+            user,
+            token,
+            amount,
+            recipient: recipientAddress,
+          }],
+          value: BigInt(config.feeWei),
+        });
 
-      const settled = await submitWithdrawIntent({
-        user,
-        token,
-        amount: amount.toString(),
-        recipient: recipientAddress,
-        nonce: nonce.toString(),
-        deadline: deadline.toString(),
-        signature,
-      }) as SubmitWithdrawIntentResult;
+        const receipt = await chainClient.waitForTransactionReceipt({ hash: requestHash });
+        assertSuccessfulReceipt(receipt, "requestWithdraw");
+        instructionId = getInstructionIdFromReceipt(receipt, teeExtensionRegistryAddress ?? undefined);
+
+        setWithdrawState({
+          kind: "pending",
+          stage: "TEE processing",
+          message: "Waiting for proxy confirmation and custody finalization.",
+          txHashes: [requestHash],
+          instructionId,
+        });
+
+        const proxyPayload = await fetchProxyResult(instructionId);
+        const actionResult = normalizeProxyActionResult(proxyPayload);
+        if (actionResult.status !== 1 || !actionResult.data) {
+          throw new Error(actionResult.log ?? "TEE requestWithdraw failed");
+        }
+
+        settled = decodeHexJson<RequestWithdrawResult>(actionResult.data);
+        txHashes = [requestHash, settled.finalizeTxHash];
+      }
 
       await refreshAccountSnapshot();
       setWithdrawAmount("");
       setWithdrawState({
         kind: "success",
-        stage: "Withdrawal finalized",
+        stage: directTxEnabled ? "Direct withdrawal finalized" : "Withdrawal finalized",
         message: `Nonce ${settled.withdrawNonce} consumed, TEE finalized custody release to ${shortAddress(recipientAddress)}.`,
-        txHashes: [settled.finalizeTxHash],
+        txHashes,
+        instructionId,
       });
     } catch (error) {
       setWithdrawState({ kind: "error", stage: "Withdrawal failed", message: getErrorMessage(error) });
@@ -674,7 +729,7 @@ function TransferView({ address }: { address: string }) {
     <div className="mx-auto px-5 py-8 sm:px-7" style={{ maxWidth: "1400px" }}>
       {/* Header */}
       <div style={{ marginBottom: "28px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <h1
             style={{
               fontFamily: "var(--font-space-grotesk)",
@@ -702,13 +757,39 @@ function TransferView({ address }: { address: string }) {
           >
             Custody + TEE
           </span>
+          <button
+            onClick={() => setDirectTxEnabled(!directTxEnabled)}
+            style={{
+              padding: "5px 10px",
+              borderRadius: "2px",
+              fontSize: "10px",
+              fontWeight: 600,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              background: directTxEnabled ? "var(--accent-dim)" : "transparent",
+              border: `1px solid ${directTxEnabled ? "var(--accent-border)" : "var(--border)"}`,
+              color: directTxEnabled ? "var(--accent)" : "var(--fg-subtle)",
+              fontFamily: "var(--font-space-grotesk)",
+            }}
+          >
+            Direct EIP-712 {directTxEnabled ? "On" : "Off"}
+          </button>
         </div>
         <p style={{ marginTop: "4px", fontSize: "11px", color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
           {address}
         </p>
         <p style={{ marginTop: "8px", maxWidth: "680px", fontSize: "12px", lineHeight: 1.6, color: "var(--fg-muted)" }}>
           Deposits: <span style={{ color: "var(--fg)" }}>approve(custody)</span> → <span style={{ color: "var(--fg)" }}>depositAndSync()</span> escrows tokens then dispatches the TEE credit.
-          Withdrawals: your wallet signs an <span style={{ color: "var(--fg)" }}>EIP-712 WithdrawIntent</span>, then the TEE verifies it over REST and submits <span style={{ color: "var(--fg)" }}>finalizeWithdraw()</span>.
+          Withdrawals: {directTxEnabled ? (
+            <>
+              your wallet signs an <span style={{ color: "var(--fg)" }}>EIP-712 WithdrawIntent</span>, then the TEE verifies it over REST and submits <span style={{ color: "var(--fg)" }}>finalizeWithdraw()</span>.
+            </>
+          ) : (
+            <>
+              <span style={{ color: "var(--fg)" }}>requestWithdraw()</span> goes through the instruction sender, then the TEE finalizes custody release after proxy execution.
+            </>
+          )}
         </p>
       </div>
 
@@ -833,8 +914,28 @@ function TransferView({ address }: { address: string }) {
           <Card>
             <CardHeader>
               <CardTitle>Withdraw</CardTitle>
+              <button
+                onClick={() => setDirectTxEnabled(!directTxEnabled)}
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: "2px",
+                  fontSize: "10px",
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  background: directTxEnabled ? "var(--accent-dim)" : "transparent",
+                  border: `1px solid ${directTxEnabled ? "var(--accent-border)" : "var(--border)"}`,
+                  color: directTxEnabled ? "var(--accent)" : "var(--fg-subtle)",
+                  fontFamily: "var(--font-space-grotesk)",
+                }}
+              >
+                {directTxEnabled ? "Direct" : "Contract"}
+              </button>
             </CardHeader>
-            <FlowSteps items={["sign intent", "POST to TEE", "TEE finalizes"]} color="var(--sell)" />
+            <FlowSteps
+              items={directTxEnabled ? ["sign intent", "POST to TEE", "TEE finalizes"] : ["requestWithdraw", "poll TEE", "TEE finalizes"]}
+              color="var(--sell)" />
             <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
               <TokenSelector label="Token" tokens={snapshot?.markets.tokens ?? []} value={withdrawToken} onChange={setWithdrawToken} />
               <Field label="Amount">
@@ -856,7 +957,7 @@ function TransferView({ address }: { address: string }) {
                     ? `Raw amount: ${parseAmountLabel(withdrawAmount, withdrawTokenMeta.decimals)}`
                     : "Raw amount: —",
                   `Intent nonce: ${snapshot?.account.withdrawNonce ?? "0"} → ${nextWithdrawNonce ?? "—"}`,
-                  "Settlement path: wallet signs, TEE verifies, TEE sends finalizeWithdraw().",
+                  `Settlement path: ${directTxEnabled ? "wallet signs, TEE verifies, TEE sends finalizeWithdraw()." : "instruction sender requests, proxy confirms, TEE sends finalizeWithdraw()."}`,
                 ]}
               />
               <button
@@ -877,7 +978,11 @@ function TransferView({ address }: { address: string }) {
                   transition: "opacity 0.15s",
                 }}
               >
-                Sign & submit intent
+                {withdrawState.kind === "pending"
+                  ? "Processing..."
+                  : directTxEnabled
+                    ? "Sign & submit intent"
+                    : "Request withdrawal"}
               </button>
               <ActionBanner state={withdrawState} chainId={config?.chainId} />
             </div>

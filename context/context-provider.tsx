@@ -27,7 +27,7 @@ createAppKit({
   defaultNetwork: flareTestnet,
   metadata,
   features: {
-    analytics: true,
+    analytics: false,
   },
 });
 
